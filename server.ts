@@ -10,6 +10,18 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Enable CORS and ensure JSON content-type header for all API responses
+app.use('/api', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/json');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 const EXCEL_DIR = path.join(process.cwd(), 'excel_records');
 const RIDERS_FILE = path.join(EXCEL_DIR, 'riders.json');
 const LOGS_FILE = path.join(EXCEL_DIR, 'audit_logs.json');
