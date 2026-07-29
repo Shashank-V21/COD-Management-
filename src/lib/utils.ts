@@ -52,7 +52,9 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
   let onlineCollection = 0;
   let onlineByShashank = 0;
   let onlineByAkshay = 0;
+  let totalPendingAmount = 0;
   const ridersSet = new Set<string>();
+  const pendingRidersSet = new Set<string>();
 
   transactions.forEach((tx) => {
     totalCodCollected += Number(tx.codAmount) || 0;
@@ -68,6 +70,13 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
     if (tx.riderName) {
       ridersSet.add(tx.riderName.trim().toLowerCase());
     }
+
+    if (tx.paymentStatus === 'Pending' && (tx.pendingAmount || 0) > 0) {
+      totalPendingAmount += Number(tx.pendingAmount) || 0;
+      if (tx.riderName) {
+        pendingRidersSet.add(tx.riderName.trim().toLowerCase());
+      }
+    }
   });
 
   return {
@@ -78,6 +87,8 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
     onlineByShashank,
     onlineByAkshay,
     totalRidersPaid: ridersSet.size,
+    pendingRidersCount: pendingRidersSet.size,
+    totalPendingAmount,
   };
 };
 
@@ -92,9 +103,9 @@ export const generateWhatsAppReceiptLink = (tx: Transaction, hubName = 'Hub Ops'
 *Breakdown:*
 • Cash: ₹${tx.cashAmount.toLocaleString('en-IN')}
 • Online: ₹${tx.onlineAmount.toLocaleString('en-IN')}${tx.onlineReceivedBy ? ` (Received by: ${tx.onlineReceivedBy})` : ''}
-
+${tx.paymentStatus === 'Pending' ? `• Pending Amount: ₹${(tx.pendingAmount || 0).toLocaleString('en-IN')}\n` : ''}
 ${tx.remarks ? `📝 *Remarks:* ${tx.remarks}\n` : ''}--------------------------------
-*Status:* ✅ Verified & Saved
+*Status:* ${tx.paymentStatus === 'Pending' ? '⏳ Pending Payment' : '✅ Verified & Saved'}
 Thank you!`;
 
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
@@ -110,6 +121,8 @@ export const exportToCSV = (transactions: Transaction[], filename = 'COD_Report.
     'Online Amount',
     'Online Received By',
     'Payment Mode',
+    'Payment Status',
+    'Pending Amount',
     'Remarks',
   ];
 
@@ -122,8 +135,49 @@ export const exportToCSV = (transactions: Transaction[], filename = 'COD_Report.
     t.onlineAmount,
     t.onlineReceivedBy || '-',
     t.paymentMode,
+    t.paymentStatus || 'Paid',
+    t.pendingAmount || 0,
     `"${(t.remarks || '').replace(/"/g, '""')}"`,
   ]);
+
+  const csvContent =
+    'data:text/csv;charset=utf-8,' +
+    [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement('a');
+  link.setAttribute('href', encodedUri);
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
+export const exportPendingToCSV = (pendingTransactions: Transaction[], filename = 'Pending_COD_Report.csv') => {
+  const headers = [
+    'Rider Name',
+    'Date',
+    'Total COD Amount',
+    'Amount Received',
+    'Pending Amount',
+    'Status',
+    'Last Updated Date',
+    'Remarks',
+  ];
+
+  const rows = pendingTransactions.map((t) => {
+    const amountReceived = (t.cashAmount || 0) + (t.onlineAmount || 0);
+    return [
+      `"${(t.riderName || '').replace(/"/g, '""')}"`,
+      formatDisplayDate(t.date),
+      t.codAmount,
+      amountReceived,
+      t.pendingAmount || 0,
+      t.paymentStatus || 'Pending',
+      formatDisplayDate(t.date),
+      `"${(t.remarks || '').replace(/"/g, '""')}"`,
+    ];
+  });
 
   const csvContent =
     'data:text/csv;charset=utf-8,' +

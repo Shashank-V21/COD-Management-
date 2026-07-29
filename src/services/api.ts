@@ -1,4 +1,4 @@
-import { Transaction, Rider, AuditLog } from '../types';
+import { Transaction, Rider, AuditLog, PaymentMode, OnlineReceiver, PaymentHistoryEntry } from '../types';
 import { parseRidersFromBuffer, isValidRiderName } from '../lib/excelParser';
 
 // Local storage fallback helpers for resilience across hosting environments (Express vs Vercel Static)
@@ -162,6 +162,7 @@ export const api = {
     endDate?: string;
     paymentMode?: string;
     onlineReceiver?: string;
+    paymentStatus?: string;
   }): Promise<Transaction[]> {
     const query = new URLSearchParams();
     if (params?.date) query.append('date', params.date);
@@ -169,6 +170,7 @@ export const api = {
     if (params?.endDate) query.append('endDate', params.endDate);
     if (params?.paymentMode) query.append('paymentMode', params.paymentMode);
     if (params?.onlineReceiver) query.append('onlineReceiver', params.onlineReceiver);
+    if (params?.paymentStatus) query.append('paymentStatus', params.paymentStatus);
 
     const fallback = () => {
       let list = getLocalTransactions();
@@ -182,6 +184,9 @@ export const api = {
       }
       if (params?.onlineReceiver && params.onlineReceiver !== 'All') {
         list = list.filter((t) => t.onlineReceivedBy === params.onlineReceiver);
+      }
+      if (params?.paymentStatus && params.paymentStatus !== 'All') {
+        list = list.filter((t) => t.paymentStatus === params.paymentStatus);
       }
       return list.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
     };
@@ -206,6 +211,21 @@ export const api = {
   async createTransaction(payload: Partial<Transaction>): Promise<Transaction> {
     const fallback = () => {
       const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const status = payload.paymentStatus === 'Pending' ? 'Pending' : 'Paid';
+      const pending = status === 'Pending' ? Math.max(0, Number(payload.pendingAmount) || 0) : 0;
+      const initialHistory: PaymentHistoryEntry[] = [
+        {
+          id: `pay_${Date.now()}`,
+          date: payload.date || new Date().toISOString().split('T')[0],
+          time: payload.time || '',
+          amountReceived: (Number(payload.cashAmount) || 0) + (Number(payload.onlineAmount) || 0),
+          paymentMode: payload.paymentMode || 'Cash',
+          onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
+          remarks: payload.remarks || 'Initial Payment',
+          remainingPending: pending,
+        },
+      ];
+
       const newTx: Transaction = {
         id: txId,
         date: payload.date || new Date().toISOString().split('T')[0],
@@ -214,9 +234,12 @@ export const api = {
         codAmount: Number(payload.codAmount) || 0,
         cashAmount: Number(payload.cashAmount) || 0,
         onlineAmount: Number(payload.onlineAmount) || 0,
-        onlineReceivedBy: payload.onlineReceivedBy || '',
+        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
         paymentMode: payload.paymentMode || 'Cash',
         remarks: payload.remarks || '',
+        paymentStatus: status,
+        pendingAmount: pending,
+        paymentHistory: initialHistory,
       };
       const existing = getLocalTransactions();
       saveLocalTransactions([newTx, ...existing]);
@@ -239,7 +262,11 @@ export const api = {
 
     const created = data.transaction;
     const existing = getLocalTransactions();
-    if (!existing.some((t) => t.id === created.id)) {
+    const idx = existing.findIndex((t) => t.id === created.id);
+    if (idx !== -1) {
+      existing[idx] = created;
+      saveLocalTransactions(existing);
+    } else {
       saveLocalTransactions([created, ...existing]);
     }
     return created;
@@ -268,6 +295,109 @@ export const api = {
         return { success: true };
       }
     );
+  },
+
+  async receivePendingPayment(
+    id: string,
+    payload: {
+      amountReceivedNow: number;
+      paymentMode: PaymentMode;
+      cashAmount?: number;
+      onlineAmount?: number;
+      onlineReceivedBy?: OnlineReceiver | '';
+      remarks?: string;
+      date?: string;
+      time?: string;
+    }
+  ): Promise<Transaction> {
+    const fallback = () => {
+      const existing = getLocalTransactions();
+      const idx = existing.findIndex((t) => t.id === id);
+      if (idx === -1) {
+        throw new Error('Transaction not found');
+      }
+
+      const tx = existing[idx];
+      const currentPending = tx.pendingAmount || 0;
+      const recvNow = Number(payload.amountReceivedNow);
+
+      if (recvNow > currentPending) {
+        throw new Error(`Received amount (₹${recvNow}) cannot exceed pending amount (₹${currentPending}).`);
+      }
+
+      const newPending = Math.max(0, currentPending - recvNow);
+      const newStatus = newPending <= 0 ? 'Paid' : 'Pending';
+
+      const addCash = payload.cashAmount || (payload.paymentMode === 'Cash' ? recvNow : 0);
+      const addOnline = payload.onlineAmount || (payload.paymentMode === 'Online' ? recvNow : 0);
+
+      const newCashTotal = (tx.cashAmount || 0) + addCash;
+      const newOnlineTotal = (tx.onlineAmount || 0) + addOnline;
+
+      let finalMode: PaymentMode = tx.paymentMode;
+      if (newCashTotal > 0 && newOnlineTotal > 0) finalMode = 'Cash + Online';
+      else if (newOnlineTotal > 0) finalMode = 'Online';
+      else finalMode = 'Cash';
+
+      const history = tx.paymentHistory ? [...tx.paymentHistory] : [];
+      const payDate = payload.date || new Date().toISOString().split('T')[0];
+      const payTime = payload.time || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+      history.push({
+        id: `pay_${Date.now()}`,
+        date: payDate,
+        time: payTime,
+        amountReceived: recvNow,
+        paymentMode: payload.paymentMode,
+        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
+        remarks: payload.remarks || '',
+        remainingPending: newPending,
+      });
+
+      const updatedTx: Transaction = {
+        ...tx,
+        cashAmount: newCashTotal,
+        onlineAmount: newOnlineTotal,
+        paymentMode: finalMode,
+        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || tx.onlineReceivedBy,
+        paymentStatus: newStatus,
+        pendingAmount: newPending,
+        paymentHistory: history,
+        remarks: payload.remarks
+          ? tx.remarks
+            ? `${tx.remarks} | Recv ₹${recvNow}: ${payload.remarks}`
+            : `Recv ₹${recvNow}: ${payload.remarks}`
+          : tx.remarks,
+      };
+
+      existing[idx] = updatedTx;
+      saveLocalTransactions(existing);
+      addLocalAuditLog(
+        'UPDATE',
+        `Received ₹${recvNow} from ${tx.riderName}. Remaining Pending: ₹${newPending} (${newStatus})`
+      );
+
+      return { success: true, transaction: updatedTx };
+    };
+
+    const data = await safeFetchJson<{ success: boolean; transaction: Transaction }>(
+      `/api/transactions/${id}/receive-payment`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      async () => fallback()
+    );
+
+    const updated = data.transaction;
+    const existing = getLocalTransactions();
+    const idx = existing.findIndex((t) => t.id === updated.id);
+    if (idx !== -1) {
+      existing[idx] = updated;
+      saveLocalTransactions(existing);
+    }
+    return updated;
   },
 
   async deleteTransaction(id: string): Promise<void> {

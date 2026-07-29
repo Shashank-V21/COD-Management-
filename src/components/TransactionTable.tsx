@@ -195,6 +195,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
               <th className="py-3 px-4 text-right">Online</th>
               <th className="py-3 px-4">Online Received By</th>
               <th className="py-3 px-3">Payment Mode</th>
+              <th className="py-3 px-3 text-center">Status</th>
               <th className="py-3 px-4">Remarks</th>
               <th className="py-3 px-4 text-center">Actions</th>
             </tr>
@@ -238,6 +239,17 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                     >
                       {tx.paymentMode}
                     </span>
+                  </td>
+                  <td className="py-3 px-3 text-center whitespace-nowrap">
+                    {tx.paymentStatus === 'Pending' && (tx.pendingAmount || 0) > 0 ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300">
+                        Pending (₹{tx.pendingAmount})
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
+                        Paid
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-4 text-slate-600 max-w-xs truncate">{tx.remarks || '—'}</td>
                   <td className="py-3 px-4 text-center whitespace-nowrap">

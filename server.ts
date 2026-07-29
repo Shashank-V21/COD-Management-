@@ -114,7 +114,7 @@ const getOrCreateWorkbook = async (dateStr: string): Promise<{ workbook: ExcelJS
   } else {
     const worksheet = workbook.addWorksheet('COD Transactions');
 
-    // Setup headers (Exact required columns 1..9 plus ID cell 10)
+    // Setup headers (Exact required columns 1..9 plus ID cell 10, plus Pending status col 11, pending amount col 12, history col 13)
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Time', key: 'time', width: 15 },
@@ -126,6 +126,9 @@ const getOrCreateWorkbook = async (dateStr: string): Promise<{ workbook: ExcelJS
       { header: 'Payment Mode', key: 'paymentMode', width: 18 },
       { header: 'Remarks', key: 'remarks', width: 30 },
       { header: 'ID', key: 'id', width: 25 },
+      { header: 'Payment Status', key: 'paymentStatus', width: 15 },
+      { header: 'Pending Amount', key: 'pendingAmount', width: 18 },
+      { header: 'Payment History', key: 'paymentHistory', width: 40 },
     ];
 
     // Style header row
@@ -164,6 +167,20 @@ const parseTransactionsFromSheet = (worksheet: ExcelJS.Worksheet, fileDateStr: s
       }
     }
 
+    const paymentStatusVal = String(row.getCell(11).value || '').trim();
+    const paymentStatus = paymentStatusVal === 'Pending' ? 'Pending' : 'Paid';
+    const pendingAmount = Number(row.getCell(12).value) || 0;
+
+    let history: any[] = [];
+    try {
+      const rawHist = row.getCell(13).value;
+      if (rawHist) {
+        history = JSON.parse(String(rawHist));
+      }
+    } catch {
+      history = [];
+    }
+
     transactions.push({
       id: String(idCell),
       date: parsedDate,
@@ -175,6 +192,9 @@ const parseTransactionsFromSheet = (worksheet: ExcelJS.Worksheet, fileDateStr: s
       onlineReceivedBy: String(row.getCell(7).value || ''),
       paymentMode: String(row.getCell(8).value || ''),
       remarks: String(row.getCell(9).value || ''),
+      paymentStatus,
+      pendingAmount,
+      paymentHistory: history,
     });
   }
 
@@ -201,7 +221,7 @@ app.get('/api/available-dates', (req, res) => {
 // 2. GET Transactions
 app.get('/api/transactions', async (req, res) => {
   try {
-    const { date, startDate, endDate, paymentMode, onlineReceiver } = req.query;
+    const { date, startDate, endDate, paymentMode, onlineReceiver, paymentStatus } = req.query;
     let datesToRead: string[] = [];
 
     if (startDate && endDate) {
@@ -241,6 +261,9 @@ app.get('/api/transactions', async (req, res) => {
     if (onlineReceiver && onlineReceiver !== 'All') {
       filtered = filtered.filter((t) => t.onlineReceivedBy === onlineReceiver);
     }
+    if (paymentStatus && paymentStatus !== 'All') {
+      filtered = filtered.filter((t) => t.paymentStatus === paymentStatus);
+    }
 
     filtered.sort((a, b) => {
       const dateA = `${a.date} ${a.time}`;
@@ -258,8 +281,19 @@ app.get('/api/transactions', async (req, res) => {
 // 3. POST Create New Transaction (Auto Append to Daily Excel)
 app.post('/api/transactions', async (req, res) => {
   try {
-    const { date, time, riderName, codAmount, cashAmount, onlineAmount, onlineReceivedBy, paymentMode, remarks } =
-      req.body;
+    const {
+      date,
+      time,
+      riderName,
+      codAmount,
+      cashAmount,
+      onlineAmount,
+      onlineReceivedBy,
+      paymentMode,
+      remarks,
+      paymentStatus,
+      pendingAmount,
+    } = req.body;
 
     if (!riderName || !codAmount || !paymentMode || !date) {
       return res.status(400).json({ error: 'Missing required transaction fields' });
@@ -269,7 +303,11 @@ app.post('/api/transactions', async (req, res) => {
     const cash = Number(cashAmount) || 0;
     const online = Number(onlineAmount) || 0;
 
-    if (paymentMode === 'Cash + Online') {
+    const status = paymentStatus === 'Pending' ? 'Pending' : 'Paid';
+    const pending = status === 'Pending' ? Math.max(0, Number(pendingAmount) || 0) : 0;
+
+    // Validate if Paid
+    if (status === 'Paid' && paymentMode === 'Cash + Online') {
       if (Math.abs(cash + online - totalCod) > 0.01) {
         return res
           .status(400)
@@ -290,8 +328,21 @@ app.post('/api/transactions', async (req, res) => {
       }
     }
 
+    const displayDate = formatToDDMMYYYY(date);
+    const initialHistory = [
+      {
+        id: `pay_${Date.now()}`,
+        date: displayDate,
+        time: time || '',
+        amountReceived: cash + online,
+        paymentMode,
+        onlineReceivedBy: onlineReceivedBy || '',
+        remarks: remarks || 'Initial Payment',
+        remainingPending: pending,
+      },
+    ];
+
     if (!duplicateFound) {
-      const displayDate = formatToDDMMYYYY(date);
       const newRow = sheet.addRow([
         displayDate,
         time || '',
@@ -303,6 +354,9 @@ app.post('/api/transactions', async (req, res) => {
         paymentMode,
         remarks || '',
         txId,
+        status,
+        pending,
+        JSON.stringify(initialHistory),
       ]);
 
       newRow.eachCell((cell) => {
@@ -316,10 +370,9 @@ app.post('/api/transactions', async (req, res) => {
       await workbook.xlsx.writeFile(filePath);
     }
 
-    const displayDate = formatToDDMMYYYY(date);
     addAuditLog(
       'CREATE',
-      `Added transaction ₹${totalCod} (${paymentMode}) for ${riderName} on ${displayDate}`
+      `Added transaction ₹${totalCod} (${paymentMode}) for ${riderName} on ${displayDate}${status === 'Pending' ? ` [Pending: ₹${pending}]` : ''}`
     );
 
     const savedTx = {
@@ -333,6 +386,9 @@ app.post('/api/transactions', async (req, res) => {
       onlineReceivedBy: onlineReceivedBy || '',
       paymentMode,
       remarks: remarks || '',
+      paymentStatus: status,
+      pendingAmount: pending,
+      paymentHistory: initialHistory,
     };
 
     res.status(201).json({ success: true, transaction: savedTx });
@@ -346,8 +402,19 @@ app.post('/api/transactions', async (req, res) => {
 app.put('/api/transactions/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { date, time, riderName, codAmount, cashAmount, onlineAmount, onlineReceivedBy, paymentMode, remarks } =
-      req.body;
+    const {
+      date,
+      time,
+      riderName,
+      codAmount,
+      cashAmount,
+      onlineAmount,
+      onlineReceivedBy,
+      paymentMode,
+      remarks,
+      paymentStatus,
+      pendingAmount,
+    } = req.body;
 
     const files = fs.readdirSync(REPORTS_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
     let found = false;
@@ -373,6 +440,9 @@ app.put('/api/transactions/:id', async (req, res) => {
         const row = sheet.getRow(targetRowNumber);
         const displayDate = formatToDDMMYYYY(date);
 
+        const status = paymentStatus === 'Pending' ? 'Pending' : 'Paid';
+        const pending = status === 'Pending' ? Math.max(0, Number(pendingAmount) || 0) : 0;
+
         row.getCell(1).value = displayDate;
         row.getCell(2).value = time || '';
         row.getCell(3).value = riderName;
@@ -382,22 +452,164 @@ app.put('/api/transactions/:id', async (req, res) => {
         row.getCell(7).value = onlineReceivedBy || '';
         row.getCell(8).value = paymentMode;
         row.getCell(9).value = remarks || '';
-        row.commit();
+        row.getCell(11).value = status;
+        row.getCell(12).value = pending;
 
         await wb.xlsx.writeFile(filePath);
 
-        addAuditLog('UPDATE', `Updated transaction ${id} for ${riderName} (₹${codAmount})`);
+        addAuditLog('UPDATE', `Updated transaction for ${riderName} (₹${codAmount}) on ${displayDate}`);
         break;
       }
     }
 
     if (!found) {
-      return res.status(404).json({ error: 'Transaction not found in Excel records' });
+      return res.status(404).json({ error: 'Transaction not found' });
     }
 
     res.json({ success: true });
   } catch (err: any) {
     console.error('Error updating transaction:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. POST Receive Payment for Pending Transaction
+app.post('/api/transactions/:id/receive-payment', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amountReceivedNow, paymentMode, cashAmount, onlineAmount, onlineReceivedBy, remarks, date, time } =
+      req.body;
+
+    const recvNow = Number(amountReceivedNow);
+    if (!recvNow || recvNow <= 0) {
+      return res.status(400).json({ error: 'Received amount must be greater than zero.' });
+    }
+
+    const files = fs.readdirSync(REPORTS_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
+    let found = false;
+    let updatedTx: any = null;
+
+    for (const f of files) {
+      const filePath = path.join(REPORTS_DIR, f);
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(filePath);
+      const sheet = wb.getWorksheet('COD Transactions');
+
+      if (!sheet) continue;
+
+      let targetRowNumber = -1;
+      for (let r = 2; r <= sheet.rowCount; r++) {
+        if (String(sheet.getRow(r).getCell(10).value) === id) {
+          targetRowNumber = r;
+          break;
+        }
+      }
+
+      if (targetRowNumber !== -1) {
+        found = true;
+        const row = sheet.getRow(targetRowNumber);
+
+        const currentPending = Number(row.getCell(12).value) || 0;
+        if (recvNow > currentPending) {
+          return res.status(400).json({
+            error: `Received amount (₹${recvNow}) cannot exceed pending amount (₹${currentPending}).`,
+          });
+        }
+
+        const newPending = Math.max(0, currentPending - recvNow);
+        const newStatus = newPending <= 0 ? 'Paid' : 'Pending';
+
+        const prevCash = Number(row.getCell(5).value) || 0;
+        const prevOnline = Number(row.getCell(6).value) || 0;
+        const addCash = Number(cashAmount) || (paymentMode === 'Cash' ? recvNow : 0);
+        const addOnline = Number(onlineAmount) || (paymentMode === 'Online' ? recvNow : 0);
+
+        const newCashTotal = prevCash + addCash;
+        const newOnlineTotal = prevOnline + addOnline;
+
+        // Determine combined payment mode
+        let finalMode = String(row.getCell(8).value || '');
+        if (newCashTotal > 0 && newOnlineTotal > 0) {
+          finalMode = 'Cash + Online';
+        } else if (newOnlineTotal > 0) {
+          finalMode = 'Online';
+        } else {
+          finalMode = 'Cash';
+        }
+
+        let existingHistory: any[] = [];
+        try {
+          const rawHist = row.getCell(13).value;
+          if (rawHist) existingHistory = JSON.parse(String(rawHist));
+        } catch {
+          existingHistory = [];
+        }
+
+        const payDate = date || new Date().toISOString().split('T')[0];
+        const payTime = time || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+        const historyEntry = {
+          id: `pay_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          date: formatToDDMMYYYY(payDate),
+          time: payTime,
+          amountReceived: recvNow,
+          paymentMode: paymentMode || 'Cash',
+          onlineReceivedBy: onlineReceivedBy || '',
+          remarks: remarks || '',
+          remainingPending: newPending,
+        };
+
+        existingHistory.push(historyEntry);
+
+        // Update Excel row cells
+        row.getCell(5).value = newCashTotal;
+        row.getCell(6).value = newOnlineTotal;
+        if (onlineReceivedBy) {
+          row.getCell(7).value = onlineReceivedBy;
+        }
+        row.getCell(8).value = finalMode;
+        if (remarks) {
+          const prevRem = String(row.getCell(9).value || '');
+          row.getCell(9).value = prevRem ? `${prevRem} | Recv ₹${recvNow}: ${remarks}` : `Recv ₹${recvNow}: ${remarks}`;
+        }
+        row.getCell(11).value = newStatus;
+        row.getCell(12).value = newPending;
+        row.getCell(13).value = JSON.stringify(existingHistory);
+
+        await wb.xlsx.writeFile(filePath);
+
+        const riderName = String(row.getCell(3).value || '');
+        addAuditLog(
+          'PAYMENT_RECEIVED',
+          `Received ₹${recvNow} from ${riderName}. Remaining Pending: ₹${newPending} (${newStatus})`
+        );
+
+        updatedTx = {
+          id,
+          date: String(row.getCell(1).value || ''),
+          time: String(row.getCell(2).value || ''),
+          riderName,
+          codAmount: Number(row.getCell(4).value) || 0,
+          cashAmount: newCashTotal,
+          onlineAmount: newOnlineTotal,
+          onlineReceivedBy: String(row.getCell(7).value || ''),
+          paymentMode: finalMode,
+          remarks: String(row.getCell(9).value || ''),
+          paymentStatus: newStatus,
+          pendingAmount: newPending,
+          paymentHistory: existingHistory,
+        };
+        break;
+      }
+    }
+
+    if (!found) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    res.json({ success: true, transaction: updatedTx });
+  } catch (err: any) {
+    console.error('Error receiving payment:', err);
     res.status(500).json({ error: err.message });
   }
 });

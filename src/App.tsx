@@ -14,12 +14,13 @@ import { ReportsView } from './components/ReportsView';
 import { RiderManagement } from './components/RiderManagement';
 import { DailyClosingModal } from './components/DailyClosingModal';
 import { AuditLogsView } from './components/AuditLogsView';
+import { PendingCodView } from './components/PendingCodView';
 
-import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2 } from 'lucide-react';
+import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, Clock } from 'lucide-react';
 
 export default function App() {
   const [selectedDate, setSelectedDate] = useState<string>(getTodayFormattedDate());
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'ledger' | 'reports' | 'riders' | 'audit'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'ledger' | 'pending_cod' | 'reports' | 'riders' | 'audit'>('dashboard');
 
   // Data States
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -98,8 +99,31 @@ export default function App() {
     return res;
   };
 
+  // Receive Pending Payment
+  const handleReceivePendingPayment = async (
+    id: string,
+    payload: {
+      amountReceivedNow: number;
+      paymentMode: any;
+      cashAmount?: number;
+      onlineAmount?: number;
+      onlineReceivedBy?: any;
+      remarks?: string;
+      date?: string;
+      time?: string;
+    }
+  ) => {
+    await api.receivePendingPayment(id, payload);
+    await loadTransactions(selectedDate);
+  };
+
   // Calculate Dashboard Stats
   const stats: DashboardStats = calculateStats(transactions);
+
+  // Count pending items
+  const pendingCount = transactions.filter(
+    (tx) => tx.paymentStatus === 'Pending' && (tx.pendingAmount || 0) > 0
+  ).length;
 
   return (
     <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased flex flex-col">
@@ -141,6 +165,23 @@ export default function App() {
               <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-blue-100 text-blue-800 font-extrabold">
                 {transactions.length}
               </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('pending_cod')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                activeTab === 'pending_cod'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Clock className="w-4 h-4 text-amber-500" />
+              <span>Pending COD</span>
+              {pendingCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500 text-white font-extrabold animate-pulse">
+                  {pendingCount}
+                </span>
+              )}
             </button>
 
             <button
@@ -226,6 +267,14 @@ export default function App() {
               onDownloadExcel={(d) => window.open(api.getExcelDownloadUrl(d), '_blank')}
             />
           </div>
+        )}
+
+        {activeTab === 'pending_cod' && (
+          <PendingCodView
+            transactions={transactions}
+            onReceivePayment={handleReceivePendingPayment}
+            onRefreshData={() => loadTransactions(selectedDate)}
+          />
         )}
 
         {activeTab === 'reports' && <ReportsView />}

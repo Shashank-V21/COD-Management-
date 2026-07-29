@@ -2,6 +2,19 @@ export type PaymentMode = 'Cash' | 'Online' | 'Cash + Online';
 
 export type OnlineReceiver = 'Shashank' | 'Akshay';
 
+export type PaymentStatus = 'Paid' | 'Pending';
+
+export interface PaymentHistoryEntry {
+  id?: string;
+  date: string;
+  time: string;
+  amountReceived: number;
+  paymentMode?: PaymentMode;
+  onlineReceivedBy?: OnlineReceiver | '';
+  remarks?: string;
+  remainingPending?: number;
+}
+
 export interface Transaction {
   id: string;
   date: string; // YYYY-MM-DD
@@ -14,6 +27,9 @@ export interface Transaction {
   paymentMode: PaymentMode;
   remarks?: string;
   createdAt?: string;
+  paymentStatus?: PaymentStatus; // 'Paid' | 'Pending'
+  pendingAmount?: number; // Default 0
+  paymentHistory?: PaymentHistoryEntry[];
 }
 
 export interface Rider {
@@ -33,6 +49,8 @@ export interface DashboardStats {
   onlineByShashank: number;
   onlineByAkshay: number;
   totalRidersPaid: number;
+  pendingRidersCount?: number;
+  totalPendingAmount?: number;
 }
 
 export interface TransactionFilter {
@@ -41,12 +59,13 @@ export interface TransactionFilter {
   customEndDate?: string;
   paymentMode: string; // 'All' | 'Cash' | 'Online' | 'Cash + Online'
   onlineReceiver: string; // 'All' | 'Shashank' | 'Akshay'
+  paymentStatus?: string; // 'All' | 'Paid' | 'Pending'
 }
 
 export interface AuditLog {
   id: string;
   timestamp: string;
-  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'CLOSING' | 'IMPORT_RIDERS';
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'CLOSING' | 'IMPORT_RIDERS' | 'PAYMENT_RECEIVED';
   details: string;
   user?: string;
 }
