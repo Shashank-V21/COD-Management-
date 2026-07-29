@@ -200,6 +200,7 @@ export default function App() {
               onAddRiderQuick={async (name) => {
                 await handleAddRider({ name });
               }}
+              onRemoveRiderQuick={handleDeleteRider}
             />
 
             {/* Transactions Ledger Table for Active Date */}

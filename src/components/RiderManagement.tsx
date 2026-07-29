@@ -44,9 +44,28 @@ export const RiderManagement: React.FC<RiderManagementProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
+  // Delete Confirmation State
+  const [riderToDelete, setRiderToDelete] = useState<Rider | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const filteredRiders = riders.filter((r) =>
     r.name.toLowerCase().includes(searchTerm.trim().toLowerCase())
   );
+
+  const handleConfirmDeleteRider = async () => {
+    if (!riderToDelete) return;
+    setIsDeleting(true);
+    try {
+      await onDeleteRider(riderToDelete.id);
+      setSuccessMsg(`Rider "${riderToDelete.name}" removed successfully!`);
+      setRiderToDelete(null);
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to remove rider.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,9 +211,9 @@ export const RiderManagement: React.FC<RiderManagementProps> = ({
                   </td>
                   <td className="py-3.5 px-4 text-center">
                     <button
-                      onClick={() => onDeleteRider(r.id)}
+                      onClick={() => setRiderToDelete(r)}
                       className="p-1.5 hover:bg-red-50 text-red-600 rounded-md transition-colors"
-                      title="Delete Rider"
+                      title="Remove Rider"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -351,6 +370,51 @@ export const RiderManagement: React.FC<RiderManagementProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Rider Confirmation Modal */}
+      {riderToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3 mb-3 text-red-600">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Remove Rider</h3>
+                <p className="text-xs text-slate-500 font-medium">Confirm deletion from directory</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              Are you sure you want to remove rider <strong className="text-slate-900 font-bold">{riderToDelete.name}</strong> from the rider directory?
+            </p>
+
+            <div className="bg-slate-50 p-3 rounded-lg text-xs space-y-1 text-slate-600 mb-5 border border-slate-200">
+              <p><span className="font-semibold text-slate-700">Rider Name:</span> {riderToDelete.name}</p>
+              {riderToDelete.phone && <p><span className="font-semibold text-slate-700">Phone:</span> {riderToDelete.phone}</p>}
+              {riderToDelete.vehicleNumber && <p><span className="font-semibold text-slate-700">Vehicle:</span> {riderToDelete.vehicleNumber}</p>}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRiderToDelete(null)}
+                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteRider}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-colors shadow-2xs"
+              >
+                {isDeleting ? 'Removing...' : 'Remove Rider'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -14,6 +14,7 @@ import {
   CreditCard,
   Banknote,
   RotateCcw,
+  Trash2,
 } from 'lucide-react';
 
 interface TransactionFormProps {
@@ -21,6 +22,7 @@ interface TransactionFormProps {
   selectedDate: string;
   onSubmit: (data: Partial<Transaction>) => Promise<void>;
   onAddRiderQuick: (name: string) => Promise<void>;
+  onRemoveRiderQuick?: (id: string) => Promise<void>;
 }
 
 export const TransactionForm: React.FC<TransactionFormProps> = ({
@@ -28,6 +30,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
   selectedDate,
   onSubmit,
   onAddRiderQuick,
+  onRemoveRiderQuick,
 }) => {
   // Form State
   const [riderName, setRiderName] = useState('');
@@ -264,19 +267,38 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
               <div className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-56 overflow-y-auto py-1">
                 {filteredRiders.length > 0 ? (
                   filteredRiders.map((r) => (
-                    <button
+                    <div
                       key={r.id}
-                      type="button"
-                      onClick={() => handleSelectRider(r.name)}
-                      className="w-full text-left px-3.5 py-2 hover:bg-blue-50 hover:text-blue-700 text-xs text-slate-800 font-medium flex items-center justify-between transition-colors"
+                      className="w-full px-3.5 py-1.5 hover:bg-blue-50 text-xs text-slate-800 font-medium flex items-center justify-between transition-colors group"
                     >
-                      <span>{r.name}</span>
-                      {r.vehicleNumber && (
-                        <span className="text-[10px] text-slate-400 font-normal">
-                          {r.vehicleNumber}
-                        </span>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectRider(r.name)}
+                        className="flex-1 text-left flex items-center justify-between py-1"
+                      >
+                        <span className="group-hover:text-blue-700 font-semibold">{r.name}</span>
+                        {r.vehicleNumber && (
+                          <span className="text-[10px] text-slate-400 font-normal mr-2">
+                            {r.vehicleNumber}
+                          </span>
+                        )}
+                      </button>
+                      {onRemoveRiderQuick && (
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`Remove "${r.name}" from rider directory?`)) {
+                              await onRemoveRiderQuick(r.id);
+                            }
+                          }}
+                          title="Remove rider"
+                          className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       )}
-                    </button>
+                    </div>
                   ))
                 ) : (
                   <div className="p-3 text-center text-xs text-slate-500">
