@@ -4,7 +4,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import ExcelJS from 'exceljs';
 import multer from 'multer';
-import { parseRidersFromBuffer } from './src/lib/excelParser';
+import { parseRidersFromBuffer, isValidRiderName } from './src/lib/excelParser';
 
 const app = express();
 const PORT = 3000;
@@ -447,7 +447,11 @@ app.get('/api/riders', (req, res) => {
   try {
     const data = fs.readFileSync(RIDERS_FILE, 'utf-8');
     const riders = JSON.parse(data || '[]');
-    res.json({ riders });
+    const cleaned = riders.filter((r: any) => r && r.name && isValidRiderName(r.name));
+    if (cleaned.length !== riders.length) {
+      fs.writeFileSync(RIDERS_FILE, JSON.stringify(cleaned, null, 2));
+    }
+    res.json({ riders: cleaned });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

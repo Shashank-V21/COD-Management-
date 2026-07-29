@@ -1,5 +1,5 @@
 import { Transaction, Rider, AuditLog } from '../types';
-import { parseRidersFromBuffer } from '../lib/excelParser';
+import { parseRidersFromBuffer, isValidRiderName } from '../lib/excelParser';
 
 // Local storage fallback helpers for resilience across hosting environments (Express vs Vercel Static)
 const KEYS = {
@@ -11,7 +11,13 @@ const KEYS = {
 function getLocalRiders(): Rider[] {
   try {
     const raw = localStorage.getItem(KEYS.RIDERS);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed: Rider[] = JSON.parse(raw);
+    const cleaned = parsed.filter((r) => r && isValidRiderName(r.name));
+    if (cleaned.length !== parsed.length) {
+      saveLocalRiders(cleaned);
+    }
+    return cleaned;
   } catch {
     return [];
   }
@@ -19,7 +25,8 @@ function getLocalRiders(): Rider[] {
 
 function saveLocalRiders(riders: Rider[]): void {
   try {
-    localStorage.setItem(KEYS.RIDERS, JSON.stringify(riders));
+    const cleaned = riders.filter((r) => r && isValidRiderName(r.name));
+    localStorage.setItem(KEYS.RIDERS, JSON.stringify(cleaned));
   } catch (err) {
     console.error('Failed to save riders locally:', err);
   }
