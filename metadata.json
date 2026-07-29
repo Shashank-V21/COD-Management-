@@ -1,0 +1,6 @@
+{
+  "name": "COD Management System",
+  "description": "Delivery hub Cash on Delivery management portal with daily Excel storage, real-time analytics, and split payment tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
