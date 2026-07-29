@@ -668,7 +668,11 @@ app.get('/api/reports/download-excel', async (req, res) => {
   try {
     const { date } = req.query;
     const targetDate = String(date || new Date().toISOString().split('T')[0]);
-    const { filePath } = await getOrCreateWorkbook(targetDate);
+    const filePath = getExcelFilePath(targetDate);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'No Excel file found for the selected date.' });
+    }
 
     res.download(filePath, `COD_${targetDate}.xlsx`);
   } catch (err: any) {

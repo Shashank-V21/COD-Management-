@@ -13,6 +13,8 @@ import {
   UserCheck,
   Receipt,
   Download,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -23,7 +25,7 @@ interface TransactionTableProps {
   onEdit: (tx: Transaction) => void;
   onDelete: (tx: Transaction) => void;
   onViewReceipt: (tx: Transaction) => void;
-  onDownloadExcel: (date: string) => void;
+  onDownloadExcel?: (date: string) => void;
 }
 
 export const TransactionTable: React.FC<TransactionTableProps> = ({
@@ -38,6 +40,50 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
   const [dateFilter, setDateFilter] = useState<string>('all'); // 'all', 'today', 'yesterday'
   const [paymentModeFilter, setPaymentModeFilter] = useState<string>('All');
   const [receiverFilter, setReceiverFilter] = useState<string>('All');
+
+  // Excel Download Date State (defaults to today's date)
+  const [excelDownloadDate, setExcelDownloadDate] = useState<string>(
+    new Date().toISOString().split('T')[0]
+  );
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  // Handle Date-Based Excel Download
+  const handleDownloadExcel = async () => {
+    setDownloadError(null);
+    setIsDownloading(true);
+
+    try {
+      const targetDate = excelDownloadDate || new Date().toISOString().split('T')[0];
+      const res = await fetch(`/api/reports/download-excel?date=${encodeURIComponent(targetDate)}`);
+
+      if (!res.ok) {
+        let errorMsg = 'No Excel file found for the selected date.';
+        try {
+          const data = await res.json();
+          if (data?.error) errorMsg = data.error;
+        } catch (e) {}
+        setDownloadError(errorMsg);
+        return;
+      }
+
+      // Successful download
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `COD_${targetDate}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error('Download error:', err);
+      setDownloadError('No Excel file found for the selected date.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   // Apply filters
   const filteredTransactions = transactions.filter((tx) => {
@@ -105,13 +151,30 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
 
         {/* Export Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Date Picker for Excel Download */}
+          <div className="flex items-center gap-1.5 bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs shadow-2xs">
+            <Calendar className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-slate-500 font-medium hidden sm:inline">Date:</span>
+            <input
+              type="date"
+              value={excelDownloadDate}
+              onChange={(e) => {
+                setExcelDownloadDate(e.target.value);
+                setDownloadError(null);
+              }}
+              className="bg-transparent font-bold text-slate-800 focus:outline-hidden cursor-pointer"
+              title="Select date for Excel download"
+            />
+          </div>
+
           <button
-            onClick={() => onDownloadExcel(selectedDate)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors"
-            title="Download native Excel file"
+            onClick={handleDownloadExcel}
+            disabled={isDownloading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors disabled:opacity-50"
+            title="Download native Excel file for selected date"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Download Excel (.xlsx)</span>
+            <span>{isDownloading ? 'Downloading...' : 'Download Excel (.xlsx)'}</span>
           </button>
 
           <button
@@ -131,6 +194,22 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Download Error Banner */}
+      {downloadError && (
+        <div className="mx-5 mt-4 p-3 bg-amber-50 border border-amber-300 text-amber-900 rounded-lg text-xs font-bold flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>{downloadError}</span>
+          </div>
+          <button
+            onClick={() => setDownloadError(null)}
+            className="p-1 text-amber-700 hover:text-amber-950 rounded-md transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Filter Controls (Rider Name Search filter removed completely as explicitly requested) */}
       <div className="p-4 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3 text-xs">
