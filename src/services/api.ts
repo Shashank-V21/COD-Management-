@@ -299,11 +299,11 @@ export const api = {
       riders: fallback(),
     }));
 
-    const riders = data.riders || [];
-    if (riders.length > 0) {
-      saveLocalRiders(riders);
+    if (Array.isArray(data.riders)) {
+      saveLocalRiders(data.riders);
+      return data.riders;
     }
-    return riders.length > 0 ? riders : getLocalRiders();
+    return getLocalRiders();
   },
 
   async addRider(rider: { name: string; phone?: string; vehicleNumber?: string }): Promise<Rider> {
