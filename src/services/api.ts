@@ -8,6 +8,17 @@ const KEYS = {
   AUDIT_LOGS: 'cod_app_audit_logs',
 };
 
+// Auto-purge any stale browser cached riders on first load after directory reset
+if (typeof window !== 'undefined') {
+  try {
+    const RESET_KEY = 'cod_app_riders_reset_v5';
+    if (!localStorage.getItem(RESET_KEY)) {
+      localStorage.removeItem(KEYS.RIDERS);
+      localStorage.setItem(RESET_KEY, 'true');
+    }
+  } catch {}
+}
+
 function getLocalRiders(): Rider[] {
   try {
     const raw = localStorage.getItem(KEYS.RIDERS);
