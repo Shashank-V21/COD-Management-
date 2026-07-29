@@ -24,12 +24,34 @@ app.use('/api', (req, res, next) => {
 });
 
 const EXCEL_DIR = path.join(process.cwd(), 'excel_records');
+const REPORTS_DIR = path.join(process.cwd(), 'excel_reports');
 const RIDERS_FILE = path.join(EXCEL_DIR, 'riders.json');
 const LOGS_FILE = path.join(EXCEL_DIR, 'audit_logs.json');
 
-// Ensure directory exists
+// Ensure directories exist
 if (!fs.existsSync(EXCEL_DIR)) {
   fs.mkdirSync(EXCEL_DIR, { recursive: true });
+}
+if (!fs.existsSync(REPORTS_DIR)) {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+}
+
+// Migrate any legacy COD_*.xlsx files from excel_records to excel_reports
+try {
+  if (fs.existsSync(EXCEL_DIR)) {
+    const oldFiles = fs.readdirSync(EXCEL_DIR);
+    oldFiles.forEach((file) => {
+      if (file.startsWith('COD_') && file.endsWith('.xlsx')) {
+        const oldPath = path.join(EXCEL_DIR, file);
+        const newPath = path.join(REPORTS_DIR, file);
+        if (!fs.existsSync(newPath)) {
+          fs.renameSync(oldPath, newPath);
+        }
+      }
+    });
+  }
+} catch (err) {
+  console.error('Error migrating old report files:', err);
 }
 
 // Initialize riders list if missing (EMPTY as requested)
@@ -69,7 +91,7 @@ const addAuditLog = (action: string, details: string, user = 'Manager') => {
 const getExcelFilePath = (dateStr: string) => {
   // dateStr is YYYY-MM-DD
   const safeDate = dateStr && dateStr.trim() ? dateStr.trim() : new Date().toISOString().split('T')[0];
-  return path.join(EXCEL_DIR, `COD_${safeDate}.xlsx`);
+  return path.join(REPORTS_DIR, `COD_${safeDate}.xlsx`);
 };
 
 // Format YYYY-MM-DD to DD-MM-YYYY
@@ -82,7 +104,7 @@ const formatToDDMMYYYY = (yyyyMmDd: string) => {
   return yyyyMmDd;
 };
 
-// Create or Load Daily Excel Workbook
+// Create or Load Daily Excel Workbook in /excel_reports/
 const getOrCreateWorkbook = async (dateStr: string): Promise<{ workbook: ExcelJS.Workbook; filePath: string }> => {
   const filePath = getExcelFilePath(dateStr);
   const workbook = new ExcelJS.Workbook();
@@ -92,7 +114,7 @@ const getOrCreateWorkbook = async (dateStr: string): Promise<{ workbook: ExcelJS
   } else {
     const worksheet = workbook.addWorksheet('COD Transactions');
 
-    // Setup headers
+    // Setup headers (Exact required columns 1..9 plus ID cell 10)
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Time', key: 'time', width: 15 },
@@ -134,7 +156,6 @@ const parseTransactionsFromSheet = (worksheet: ExcelJS.Worksheet, fileDateStr: s
     if (!idCell) continue;
 
     const rawDate = String(row.getCell(1).value || '');
-    // Convert back DD-MM-YYYY to YYYY-MM-DD if needed
     let parsedDate = fileDateStr;
     if (rawDate && rawDate.includes('-')) {
       const parts = rawDate.split('-');
@@ -165,7 +186,7 @@ const parseTransactionsFromSheet = (worksheet: ExcelJS.Worksheet, fileDateStr: s
 // 1. GET Available Excel File Dates
 app.get('/api/available-dates', (req, res) => {
   try {
-    const files = fs.readdirSync(EXCEL_DIR);
+    const files = fs.readdirSync(REPORTS_DIR);
     const dates = files
       .filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'))
       .map((f) => f.replace('COD_', '').replace('.xlsx', ''))
@@ -184,8 +205,7 @@ app.get('/api/transactions', async (req, res) => {
     let datesToRead: string[] = [];
 
     if (startDate && endDate) {
-      // Find files matching range
-      const files = fs.readdirSync(EXCEL_DIR);
+      const files = fs.readdirSync(REPORTS_DIR);
       datesToRead = files
         .filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'))
         .map((f) => f.replace('COD_', '').replace('.xlsx', ''))
@@ -193,8 +213,7 @@ app.get('/api/transactions', async (req, res) => {
     } else if (date && date !== 'all') {
       datesToRead = [String(date)];
     } else {
-      // Default to today or all files if requested
-      const files = fs.readdirSync(EXCEL_DIR);
+      const files = fs.readdirSync(REPORTS_DIR);
       datesToRead = files
         .filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'))
         .map((f) => f.replace('COD_', '').replace('.xlsx', ''));
@@ -215,7 +234,6 @@ app.get('/api/transactions', async (req, res) => {
       }
     }
 
-    // Apply filters
     let filtered = allTx;
     if (paymentMode && paymentMode !== 'All') {
       filtered = filtered.filter((t) => t.paymentMode === paymentMode);
@@ -224,7 +242,6 @@ app.get('/api/transactions', async (req, res) => {
       filtered = filtered.filter((t) => t.onlineReceivedBy === onlineReceiver);
     }
 
-    // Sort by Date & Time descending
     filtered.sort((a, b) => {
       const dateA = `${a.date} ${a.time}`;
       const dateB = `${b.date} ${b.time}`;
@@ -238,7 +255,7 @@ app.get('/api/transactions', async (req, res) => {
   }
 });
 
-// 3. POST Create New Transaction
+// 3. POST Create New Transaction (Auto Append to Daily Excel)
 app.post('/api/transactions', async (req, res) => {
   try {
     const { date, time, riderName, codAmount, cashAmount, onlineAmount, onlineReceivedBy, paymentMode, remarks } =
@@ -248,7 +265,6 @@ app.post('/api/transactions', async (req, res) => {
       return res.status(400).json({ error: 'Missing required transaction fields' });
     }
 
-    // Validation for split payment
     const totalCod = Number(codAmount);
     const cash = Number(cashAmount) || 0;
     const online = Number(onlineAmount) || 0;
@@ -265,32 +281,42 @@ app.post('/api/transactions', async (req, res) => {
     const { workbook, filePath } = await getOrCreateWorkbook(date);
     const sheet = workbook.getWorksheet('COD Transactions') || workbook.addWorksheet('COD Transactions');
 
-    // Add row
+    // Deduplication check: verify if transaction with txId already exists
+    let duplicateFound = false;
+    for (let r = 2; r <= sheet.rowCount; r++) {
+      if (String(sheet.getRow(r).getCell(10).value) === txId) {
+        duplicateFound = true;
+        break;
+      }
+    }
+
+    if (!duplicateFound) {
+      const displayDate = formatToDDMMYYYY(date);
+      const newRow = sheet.addRow([
+        displayDate,
+        time || '',
+        riderName.trim(),
+        totalCod,
+        cash,
+        online,
+        onlineReceivedBy || '',
+        paymentMode,
+        remarks || '',
+        txId,
+      ]);
+
+      newRow.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        };
+        cell.font = { name: 'Arial', size: 10 };
+      });
+
+      await workbook.xlsx.writeFile(filePath);
+    }
+
     const displayDate = formatToDDMMYYYY(date);
-    const newRow = sheet.addRow([
-      displayDate,
-      time || '',
-      riderName.trim(),
-      totalCod,
-      cash,
-      online,
-      onlineReceivedBy || '',
-      paymentMode,
-      remarks || '',
-      txId,
-    ]);
-
-    // Border and alignment formatting for row
-    newRow.eachCell((cell) => {
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-      };
-      cell.font = { name: 'Arial', size: 10 };
-    });
-
-    await workbook.xlsx.writeFile(filePath);
-
     addAuditLog(
       'CREATE',
       `Added transaction ₹${totalCod} (${paymentMode}) for ${riderName} on ${displayDate}`
@@ -323,11 +349,11 @@ app.put('/api/transactions/:id', async (req, res) => {
     const { date, time, riderName, codAmount, cashAmount, onlineAmount, onlineReceivedBy, paymentMode, remarks } =
       req.body;
 
-    const files = fs.readdirSync(EXCEL_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
+    const files = fs.readdirSync(REPORTS_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
     let found = false;
 
     for (const f of files) {
-      const filePath = path.join(EXCEL_DIR, f);
+      const filePath = path.join(REPORTS_DIR, f);
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.readFile(filePath);
       const sheet = wb.getWorksheet('COD Transactions');
@@ -380,11 +406,11 @@ app.put('/api/transactions/:id', async (req, res) => {
 app.delete('/api/transactions/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const files = fs.readdirSync(EXCEL_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
+    const files = fs.readdirSync(REPORTS_DIR).filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'));
     let found = false;
 
     for (const f of files) {
-      const filePath = path.join(EXCEL_DIR, f);
+      const filePath = path.join(REPORTS_DIR, f);
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.readFile(filePath);
       const sheet = wb.getWorksheet('COD Transactions');
@@ -425,19 +451,16 @@ app.delete('/api/transactions/:id', async (req, res) => {
   }
 });
 
-// 6. DOWNLOAD Excel Report
-app.get('/api/reports/download-excel', (req, res) => {
+// 6. DOWNLOAD Daily Excel Report
+app.get('/api/reports/download-excel', async (req, res) => {
   try {
     const { date } = req.query;
     const targetDate = String(date || new Date().toISOString().split('T')[0]);
-    const filePath = getExcelFilePath(targetDate);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: `No Excel record found for ${targetDate}` });
-    }
+    const { filePath } = await getOrCreateWorkbook(targetDate);
 
     res.download(filePath, `COD_${targetDate}.xlsx`);
   } catch (err: any) {
+    console.error('Error downloading Excel report:', err);
     res.status(500).json({ error: err.message });
   }
 });
