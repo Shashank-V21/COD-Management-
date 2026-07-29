@@ -1,4 +1,5 @@
 import { Transaction, Rider, AuditLog } from '../types';
+import { parseRidersFromBuffer } from '../lib/excelParser';
 
 // Local storage fallback helpers for resilience across hosting environments (Express vs Vercel Static)
 const KEYS = {
@@ -367,42 +368,18 @@ export const api = {
 
   async importRiders(file: File): Promise<{ count: number; riders: Rider[] }> {
     const fallback = async () => {
-      const text = await file.text();
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const buffer = await file.arrayBuffer();
       const existing = getLocalRiders();
-      let added = 0;
-      const newRiders: Rider[] = [...existing];
-
-      lines.forEach((line) => {
-        const parts = line.split(',');
-        const candidateName = parts[0]?.replace(/"/g, '').trim();
-        if (
-          candidateName &&
-          !candidateName.toLowerCase().includes('name') &&
-          !candidateName.toLowerCase().includes('rider') &&
-          !newRiders.some((r) => r.name.toLowerCase() === candidateName.toLowerCase())
-        ) {
-          const newR: Rider = {
-            id: `rider_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            name: candidateName,
-            phone: parts[1]?.trim() || '',
-            vehicleNumber: parts[2]?.trim() || '',
-            status: 'Active',
-          };
-          newRiders.push(newR);
-          added++;
-        }
-      });
-
-      saveLocalRiders(newRiders);
-      addLocalAuditLog('IMPORT_RIDERS', `Imported ${added} riders from file`);
-      return { count: added, riders: newRiders };
+      const result = parseRidersFromBuffer(buffer, existing);
+      saveLocalRiders(result.riders);
+      addLocalAuditLog('IMPORT_RIDERS', `Imported ${result.count} riders from Excel file`);
+      return { success: true, count: result.count, riders: result.riders };
     };
 
     const formData = new FormData();
     formData.append('file', file);
 
-    const data = await safeFetchJson<{ count: number; riders: Rider[] }>(
+    const data = await safeFetchJson<{ success: boolean; count: number; riders: Rider[] }>(
       '/api/riders/import',
       {
         method: 'POST',
@@ -415,7 +392,7 @@ export const api = {
       saveLocalRiders(data.riders);
     }
 
-    return data;
+    return { count: data.count, riders: data.riders || getLocalRiders() };
   },
 
   // Audit logs

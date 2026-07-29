@@ -4,6 +4,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import ExcelJS from 'exceljs';
 import multer from 'multer';
+import { parseRidersFromBuffer } from './src/lib/excelParser';
 
 const app = express();
 const PORT = 3000;
@@ -513,52 +514,28 @@ app.post('/api/riders/import', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.readFile(req.file.path);
-    const sheet = wb.worksheets[0];
-
-    const importedNames: string[] = [];
-    if (sheet) {
-      sheet.eachRow((row, rowNumber) => {
-        // Skip header if looks like header
-        const val = String(row.getCell(1).value || '').trim();
-        if (val && !val.toLowerCase().includes('rider') && !val.toLowerCase().includes('name')) {
-          importedNames.push(val);
-        } else if (val && rowNumber > 1) {
-          importedNames.push(val);
-        }
-      });
-    }
-
-    // Remove tmp file
-    fs.unlinkSync(req.file.path);
-
-    const data = fs.readFileSync(RIDERS_FILE, 'utf-8');
-    const riders = JSON.parse(data || '[]');
-
-    let addedCount = 0;
-    importedNames.forEach((n) => {
-      if (n && !riders.some((r: any) => r.name.toLowerCase() === n.toLowerCase())) {
-        riders.push({
-          id: `rider_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          name: n,
-          phone: '',
-          vehicleNumber: '',
-          status: 'Active',
-        });
-        addedCount++;
-      }
-    });
-
-    fs.writeFileSync(RIDERS_FILE, JSON.stringify(riders, null, 2));
-    addAuditLog('IMPORT_RIDERS', `Imported ${addedCount} riders from Excel`);
-
-    res.json({ success: true, count: addedCount, riders });
-  } catch (err: any) {
-    if (req.file && fs.existsSync(req.file.path)) {
+    const fileBuffer = fs.readFileSync(req.file.path);
+    if (fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    res.status(500).json({ error: err.message });
+
+    const data = fs.readFileSync(RIDERS_FILE, 'utf-8');
+    const existingRiders = JSON.parse(data || '[]');
+
+    const result = parseRidersFromBuffer(fileBuffer, existingRiders);
+
+    fs.writeFileSync(RIDERS_FILE, JSON.stringify(result.riders, null, 2));
+    addAuditLog('IMPORT_RIDERS', `Imported ${result.count} riders from Excel file`);
+
+    res.json({ success: true, count: result.count, riders: result.riders });
+  } catch (err: any) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {}
+    }
+    console.error('Error importing riders:', err);
+    res.status(400).json({ error: err.message || 'Failed to import riders from file' });
   }
 });
 

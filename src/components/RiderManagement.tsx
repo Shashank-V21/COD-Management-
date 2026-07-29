@@ -349,7 +349,7 @@ export const RiderManagement: React.FC<RiderManagementProps> = ({
                   <span className="text-xs font-bold text-blue-600 block">
                     {selectedFile ? selectedFile.name : 'Click to browse Excel file'}
                   </span>
-                  <span className="text-[11px] text-slate-400 block mt-1">Supports .xlsx, .csv</span>
+                  <span className="text-[11px] text-slate-400 block mt-1">Supports .xlsx, .xls, .csv</span>
                 </label>
               </div>
 
