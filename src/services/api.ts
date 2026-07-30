@@ -403,28 +403,51 @@ export const api = {
 
 
   async updateTransaction(id: string, payload: Partial<Transaction>, userEmail?: string): Promise<void> {
-    const fallback = () => {
-      const existing = getLocalTransactions();
-      const idx = existing.findIndex((t) => t.id === id);
-      if (idx !== -1) {
-        existing[idx] = { ...existing[idx], ...payload };
-        saveLocalTransactions(existing);
-        addLocalAuditLog('UPDATE', `Updated transaction ${id} for ${payload.riderName || existing[idx].riderName}`, userEmail);
-      }
-    };
+    if (isSupabaseConfigured() && supabase) {
+      const updateData: any = {};
+      if (payload.date !== undefined) updateData.date = payload.date;
+      if (payload.time !== undefined) updateData.time = payload.time;
+      if (payload.riderName !== undefined) updateData.rider_name = payload.riderName;
+      if (payload.codAmount !== undefined) updateData.cod_amount = payload.codAmount;
+      if (payload.cashAmount !== undefined) updateData.cash_amount = payload.cashAmount;
+      if (payload.onlineAmount !== undefined) updateData.online_amount = payload.onlineAmount;
+      if (payload.onlineReceivedBy !== undefined) updateData.online_received_by = payload.onlineReceivedBy;
+      if (payload.paymentMode !== undefined) updateData.payment_mode = payload.paymentMode;
+      if (payload.remarks !== undefined) updateData.remarks = payload.remarks;
+      if (payload.paymentStatus !== undefined) updateData.payment_status = payload.paymentStatus;
+      if (payload.pendingAmount !== undefined) updateData.pending_amount = payload.pendingAmount;
+      if (payload.paymentHistory !== undefined) updateData.payment_history = payload.paymentHistory;
+      updateData.updated_at = new Date().toISOString();
 
-    await safeFetchJson<{ success: boolean }>(
-      `/api/transactions/${id}`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-      async () => {
-        fallback();
-        return { success: true };
+      const { error } = await supabase.from('transactions').update(updateData).eq('id', id);
+      if (error) {
+        throw new Error(`Failed to update transaction in database: ${error.message}`);
       }
-    );
+
+      try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        await supabase.from('audit_logs').insert({
+          action: 'UPDATE',
+          details: `Updated transaction ${id} for ${payload.riderName || 'Rider'}`,
+          user_email: userEmail || 'Authenticated User',
+          user_id: authUser?.id || null,
+        });
+      } catch (e) {
+        console.warn('Audit log insert error:', e);
+      }
+      return;
+    }
+
+    const res = await fetch(`/api/transactions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to update transaction on server.');
+    }
   },
 
   async receivePendingPayment(
@@ -439,43 +462,65 @@ export const api = {
       date?: string;
       time?: string;
     },
-    userEmail?: string
+    userEmail?: string,
+    userName?: string
   ): Promise<Transaction> {
-    const fallback = () => {
-      const existing = getLocalTransactions();
-      const idx = existing.findIndex((t) => t.id === id);
-      if (idx === -1) {
-        throw new Error('Transaction not found');
+    const recvNow = Number(payload.amountReceivedNow);
+    if (isNaN(recvNow) || recvNow <= 0) {
+      throw new Error('Amount received must be greater than zero.');
+    }
+
+    if (isSupabaseConfigured() && supabase) {
+      // 1. Fetch transaction directly from Supabase
+      const { data: existingTx, error: fetchError } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (fetchError || !existingTx) {
+        throw new Error(
+          `Failed to find transaction in database: ${fetchError?.message || 'Transaction not found'}`
+        );
       }
 
-      const tx = existing[idx];
-      const currentPending = tx.pendingAmount || 0;
-      const recvNow = Number(payload.amountReceivedNow);
-
+      const currentPending = Number(existingTx.pending_amount) || 0;
       if (recvNow > currentPending) {
-        throw new Error(`Received amount (₹${recvNow}) cannot exceed pending amount (₹${currentPending}).`);
+        throw new Error(
+          `Received amount (₹${recvNow}) cannot exceed pending amount (₹${currentPending}).`
+        );
       }
 
       const newPending = Math.max(0, currentPending - recvNow);
+      // Set payment_status = 'Paid' when pending_amount is 0 or when marked as paid
       const newStatus = newPending <= 0 ? 'Paid' : 'Pending';
 
       const addCash = payload.cashAmount || (payload.paymentMode === 'Cash' ? recvNow : 0);
       const addOnline = payload.onlineAmount || (payload.paymentMode === 'Online' ? recvNow : 0);
 
-      const newCashTotal = (tx.cashAmount || 0) + addCash;
-      const newOnlineTotal = (tx.onlineAmount || 0) + addOnline;
+      const newCashTotal = (Number(existingTx.cash_amount) || 0) + addCash;
+      const newOnlineTotal = (Number(existingTx.online_amount) || 0) + addOnline;
 
-      let finalMode: PaymentMode = tx.paymentMode;
+      let finalMode: PaymentMode = existingTx.payment_mode as PaymentMode;
       if (newCashTotal > 0 && newOnlineTotal > 0) finalMode = 'Cash + Online';
       else if (newOnlineTotal > 0) finalMode = 'Online';
       else finalMode = 'Cash';
 
-      const history = tx.paymentHistory ? [...tx.paymentHistory] : [];
-      const payDate = payload.date || new Date().toISOString().split('T')[0];
-      const payTime = payload.time || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      const history: PaymentHistoryEntry[] = Array.isArray(existingTx.payment_history)
+        ? [...existingTx.payment_history]
+        : [];
 
-      history.push({
-        id: `pay_${Date.now()}`,
+      const payDate = payload.date || new Date().toISOString().split('T')[0];
+      const payTime =
+        payload.time ||
+        new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+      // Requirement 3: Append record to payment_history with paid_at (current timestamp) and updated_by (current authenticated user)
+      const nowIso = new Date().toISOString();
+      const updatedBy = userEmail || userName || 'Authenticated User';
+
+      const newEntry: PaymentHistoryEntry = {
+        id: `pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         date: payDate,
         time: payTime,
         amountReceived: recvNow,
@@ -483,53 +528,89 @@ export const api = {
         onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
         remarks: payload.remarks || '',
         remainingPending: newPending,
-      });
-
-      const updatedTx: Transaction = {
-        ...tx,
-        cashAmount: newCashTotal,
-        onlineAmount: newOnlineTotal,
-        paymentMode: finalMode,
-        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || tx.onlineReceivedBy,
-        paymentStatus: newStatus,
-        pendingAmount: newPending,
-        paymentHistory: history,
-        remarks: payload.remarks
-          ? tx.remarks
-            ? `${tx.remarks} | Recv ₹${recvNow}: ${payload.remarks}`
-            : `Recv ₹${recvNow}: ${payload.remarks}`
-          : tx.remarks,
+        paid_at: nowIso,
+        updated_by: updatedBy,
       };
 
-      existing[idx] = updatedTx;
-      saveLocalTransactions(existing);
-      addLocalAuditLog(
-        'UPDATE',
-        `Received ₹${recvNow} from ${tx.riderName}. Remaining Pending: ₹${newPending} (${newStatus})`,
-        userEmail
-      );
+      history.push(newEntry);
 
-      return { success: true, transaction: updatedTx };
-    };
+      let updatedRemarks = existingTx.remarks || '';
+      if (payload.remarks) {
+        updatedRemarks = updatedRemarks
+          ? `${updatedRemarks} | Recv ₹${recvNow}: ${payload.remarks}`
+          : `Recv ₹${recvNow}: ${payload.remarks}`;
+      }
 
-    const data = await safeFetchJson<{ success: boolean; transaction: Transaction }>(
-      `/api/transactions/${id}/receive-payment`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-      async () => fallback()
-    );
+      // Requirement 1 & 4: Save update successfully to Supabase database
+      const { data: updatedRow, error: updateError } = await supabase
+        .from('transactions')
+        .update({
+          payment_status: newStatus,
+          pending_amount: newPending,
+          cash_amount: newCashTotal,
+          online_amount: newOnlineTotal,
+          online_received_by: (payload.onlineReceivedBy as OnlineReceiver | '') || existingTx.online_received_by || '',
+          payment_mode: finalMode,
+          remarks: updatedRemarks,
+          payment_history: history,
+          updated_at: nowIso,
+        })
+        .eq('id', id)
+        .select()
+        .single();
 
-    const updated = data.transaction;
-    const existing = getLocalTransactions();
-    const idx = existing.findIndex((t) => t.id === updated.id);
-    if (idx !== -1) {
-      existing[idx] = updated;
-      saveLocalTransactions(existing);
+      if (updateError || !updatedRow) {
+        throw new Error(
+          `Database update failed: ${updateError?.message || 'Could not update transaction in Supabase.'}`
+        );
+      }
+
+      // Record Audit Log in Supabase
+      try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        await supabase.from('audit_logs').insert({
+          action: 'PAYMENT_RECEIVED',
+          details: `Marked as Paid / Received ₹${recvNow} from ${existingTx.rider_name}. Remaining Pending: ₹${newPending} (${newStatus})`,
+          user_email: updatedBy,
+          user_id: authUser?.id || null,
+        });
+      } catch (e) {
+        console.warn('Audit log write failed:', e);
+      }
+
+      const updatedTx: Transaction = {
+        id: updatedRow.id,
+        date: updatedRow.date,
+        time: updatedRow.time,
+        riderName: updatedRow.rider_name,
+        codAmount: Number(updatedRow.cod_amount) || 0,
+        cashAmount: Number(updatedRow.cash_amount) || 0,
+        onlineAmount: Number(updatedRow.online_amount) || 0,
+        onlineReceivedBy: (updatedRow.online_received_by as OnlineReceiver | '') || '',
+        paymentMode: updatedRow.payment_mode as PaymentMode,
+        remarks: updatedRow.remarks || '',
+        createdAt: updatedRow.created_at,
+        paymentStatus: updatedRow.payment_status as any,
+        pendingAmount: Number(updatedRow.pending_amount) || 0,
+        paymentHistory: Array.isArray(updatedRow.payment_history) ? updatedRow.payment_history : [],
+      };
+
+      return updatedTx;
     }
-    return updated;
+
+    const res = await fetch(`/api/transactions/${id}/receive-payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || 'Failed to update transaction on server.');
+    }
+
+    const data = await res.json();
+    return data.transaction;
   },
 
   async deleteTransaction(id: string, userEmail?: string): Promise<void> {

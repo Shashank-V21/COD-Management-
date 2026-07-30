@@ -13,6 +13,8 @@ export interface PaymentHistoryEntry {
   onlineReceivedBy?: OnlineReceiver | '';
   remarks?: string;
   remainingPending?: number;
+  paid_at?: string;
+  updated_by?: string;
 }
 
 export interface Transaction {

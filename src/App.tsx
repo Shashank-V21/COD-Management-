@@ -18,7 +18,7 @@ import { AuditLogsView } from './components/AuditLogsView';
 import { PendingCodView } from './components/PendingCodView';
 import { LoginPage } from './components/LoginPage';
 
-import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, Clock, Truck, Loader2 } from 'lucide-react';
+import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, AlertCircle, Clock, Truck, Loader2 } from 'lucide-react';
 
 function ProtectedDashboard() {
   const { user, profile, role } = useAuth();
@@ -30,6 +30,12 @@ function ProtectedDashboard() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [riders, setRiders] = useState<Rider[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   // Modal States
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
@@ -37,10 +43,10 @@ function ProtectedDashboard() {
   const [receiptTransaction, setReceiptTransaction] = useState<Transaction | null>(null);
   const [isClosingModalOpen, setIsClosingModalOpen] = useState<boolean>(false);
 
-  // Load Transactions for Selected Date
-  const loadTransactions = async (dateStr: string) => {
+  // Load Transactions (All transactions to support pending COD across dates + selected date stats)
+  const loadTransactions = async (_dateStr?: string) => {
     try {
-      const data = await api.getTransactions({ date: dateStr });
+      const data = await api.getTransactions({ date: 'all' });
       setTransactions(data);
     } catch (err) {
       console.error('Error loading transactions:', err);
@@ -134,12 +140,24 @@ function ProtectedDashboard() {
       time?: string;
     }
   ) => {
-    await api.receivePendingPayment(id, payload, user?.email);
-    await loadTransactions(selectedDate);
+    try {
+      await api.receivePendingPayment(id, payload, user?.email, profile?.fullName);
+      await loadTransactions(selectedDate);
+      showToast('Payment marked as Paid successfully.', 'success');
+    } catch (err: any) {
+      console.error('Failed to receive pending payment:', err);
+      showToast(err.message || 'Database update failed.', 'error');
+      throw err;
+    }
   };
 
-  // Calculate Dashboard Stats
-  const stats: DashboardStats = calculateStats(transactions);
+  // Transactions filtered for current selected date (or all if 'all')
+  const selectedDateTransactions = selectedDate === 'all'
+    ? transactions
+    : transactions.filter((t) => t.date === selectedDate);
+
+  // Calculate Dashboard Stats for selected date
+  const stats: DashboardStats = calculateStats(selectedDateTransactions);
 
   // Count pending items
   const pendingCount = transactions.filter(
@@ -147,7 +165,22 @@ function ProtectedDashboard() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased flex flex-col">
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased flex flex-col relative">
+      {/* Toast Notification Banner */}
+      {toast && (
+        <div
+          id="toast-notification"
+          className="fixed top-5 right-5 z-[100] flex items-center gap-3 px-4 py-3 bg-slate-900 text-white shadow-2xl rounded-xl border border-slate-700 animate-in fade-in slide-in-from-top-4 duration-300"
+        >
+          {toast.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+          )}
+          <span className="text-xs font-bold tracking-wide">{toast.message}</span>
+        </div>
+      )}
+
       {/* Top Header */}
       <Header
         selectedDate={selectedDate}
