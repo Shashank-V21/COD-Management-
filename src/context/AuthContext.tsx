@@ -42,7 +42,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [hasAdmin, setHasAdmin] = useState<boolean>(true);
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
 
-  // Helper to check if any Admin user exists in database / local storage
+  // Helper to check if any Admin user exists in database
   const checkHasAdmin = async () => {
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -59,21 +59,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Error checking Supabase admin profiles:', err);
       }
     }
-
-    // Local fallback check
-    const localUsersStr = localStorage.getItem('cod_registered_users');
-    if (localUsersStr) {
-      try {
-        const localUsers: UserProfile[] = JSON.parse(localUsersStr);
-        const adminFound = localUsers.some((u) => u.role === 'Admin');
-        setHasAdmin(adminFound);
-        return;
-      } catch {}
-    }
-
-    // Default: if saved demo user exists, hasAdmin is true
-    const savedDemo = localStorage.getItem('cod_auth_demo_user') || sessionStorage.getItem('cod_auth_demo_user');
-    setHasAdmin(!!savedDemo);
+    setHasAdmin(false);
   };
 
   useEffect(() => {
@@ -84,22 +70,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await checkHasAdmin();
 
       if (!configured || !supabase) {
-        // Local fallback session restore
-        const savedUserStr = localStorage.getItem('cod_auth_demo_user') || sessionStorage.getItem('cod_auth_demo_user');
-        if (savedUserStr) {
-          try {
-            const parsed: UserProfile = JSON.parse(savedUserStr);
-            setUser(parsed);
-            setProfile(parsed);
-            setRole(parsed.role || 'Admin');
-          } catch {
-            setUser(null);
-            setProfile(null);
-          }
-        } else {
-          setUser(null);
-          setProfile(null);
-        }
+        setUser(null);
+        setProfile(null);
         setLoading(false);
         return;
       }
@@ -116,6 +88,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err) {
         console.error('Error restoring Supabase auth session:', err);
+        setUser(null);
+        setProfile(null);
       } finally {
         setLoading(false);
       }
@@ -165,117 +139,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const newProf: UserProfile = {
           id: userId,
           email,
-          role: 'Staff',
+          role: 'Admin',
           fullName: email.split('@')[0],
         };
         await supabase.from('profiles').upsert({
           id: userId,
           email,
           full_name: newProf.fullName,
-          role: 'Staff',
+          role: 'Admin',
         });
         setProfile(newProf);
-        setRole('Staff');
+        setRole('Admin');
       }
     } catch (err) {
       console.error('Failed fetching user profile:', err);
     }
   };
 
-  const signIn = async (email: string, pass: string, rememberMe = true) => {
-    if (!isSupabaseConfigured() || !supabase) {
-      // Local mode sign-in
-      const storedUsersStr = localStorage.getItem('cod_registered_users');
-      let matchedProf: UserProfile | null = null;
-      if (storedUsersStr) {
-        try {
-          const list: UserProfile[] = JSON.parse(storedUsersStr);
-          matchedProf = list.find((u) => u.email.toLowerCase() === email.toLowerCase()) || null;
-        } catch {}
-      }
-
-      if (!matchedProf) {
-        const defaultRole: UserRole = email.toLowerCase().includes('staff') ? 'Staff' : 'Admin';
-        matchedProf = {
-          id: `demo_${Date.now()}`,
-          email,
-          role: defaultRole,
-          fullName: email.split('@')[0],
-        };
-      }
-
-      if (rememberMe) {
-        localStorage.setItem('cod_auth_demo_user', JSON.stringify(matchedProf));
-      } else {
-        sessionStorage.setItem('cod_auth_demo_user', JSON.stringify(matchedProf));
-      }
-
-      setUser(matchedProf);
-      setProfile(matchedProf);
-      setRole(matchedProf.role);
-      setHasAdmin(true);
-      return { error: null };
+  const signIn = async (email: string, pass: string) => {
+    if (!supabase) {
+      return { error: 'Authentication service unavailable.' };
     }
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
         password: pass,
       });
 
-      if (error) return { error: error.message };
-      return { error: null };
+      if (error) {
+        return { error: 'Invalid email or password.' };
+      }
+
+      if (data.session?.user) {
+        setUser(data.session.user);
+        await fetchUserProfile(data.session.user.id, data.session.user.email || email);
+        return { error: null };
+      }
+
+      return { error: 'Invalid email or password.' };
     } catch (err: any) {
-      return { error: err?.message || 'Authentication failed' };
+      return { error: 'Invalid email or password.' };
     }
   };
 
   const signUp = async (email: string, pass: string, fullName: string) => {
-    if (!isSupabaseConfigured() || !supabase) {
-      // Local mode sign-up
-      const newProf: UserProfile = {
-        id: `user_${Date.now()}`,
-        email,
-        role: 'Admin',
-        fullName,
-      };
-
-      const existingStr = localStorage.getItem('cod_registered_users');
-      let list: UserProfile[] = [];
-      if (existingStr) {
-        try {
-          list = JSON.parse(existingStr);
-        } catch {}
-      }
-      list.push(newProf);
-      localStorage.setItem('cod_registered_users', JSON.stringify(list));
-      localStorage.setItem('cod_auth_demo_user', JSON.stringify(newProf));
-
-      setUser(newProf);
-      setProfile(newProf);
-      setRole('Admin');
-      setHasAdmin(true);
-      return { error: null };
+    if (!supabase) {
+      return { error: 'Authentication service unavailable.' };
     }
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email,
+        email: email.trim(),
         password: pass,
         options: {
           data: {
             full_name: fullName,
-            role: 'Admin',
           },
         },
       });
 
-      if (error) return { error: error.message };
+      if (error) {
+        return { error: error.message || 'Account creation failed.' };
+      }
 
       if (data.user) {
         await supabase.from('profiles').upsert({
           id: data.user.id,
-          email,
+          email: email.trim(),
           full_name: fullName,
           role: 'Admin',
         });
@@ -285,92 +216,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(data.session.user);
         await fetchUserProfile(data.session.user.id, data.session.user.email || email);
       } else if (data.user) {
-        // Sign in immediately after signup if session wasn't auto created
-        await supabase.auth.signInWithPassword({ email, password: pass });
+        // Attempt sign in if account created
+        const signInRes = await supabase.auth.signInWithPassword({ email: email.trim(), password: pass });
+        if (signInRes.data?.session?.user) {
+          setUser(signInRes.data.session.user);
+          await fetchUserProfile(signInRes.data.session.user.id, email);
+        }
       }
 
       setHasAdmin(true);
       return { error: null };
     } catch (err: any) {
-      return { error: err?.message || 'Account creation failed' };
+      return { error: err?.message || 'Account creation failed.' };
     }
   };
 
   const signUpFirstAdmin = async (email: string, pass: string, fullName: string) => {
-    if (!isSupabaseConfigured() || !supabase) {
-      // Local mode initial admin creation
-      const adminProf: UserProfile = {
-        id: `admin_${Date.now()}`,
-        email,
-        role: 'Admin',
-        fullName,
-      };
-
-      const users: UserProfile[] = [adminProf];
-      localStorage.setItem('cod_registered_users', JSON.stringify(users));
-      localStorage.setItem('cod_auth_demo_user', JSON.stringify(adminProf));
-
-      setUser(adminProf);
-      setProfile(adminProf);
-      setRole('Admin');
-      setHasAdmin(true);
-      return { error: null };
-    }
-
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password: pass,
-        options: {
-          data: {
-            full_name: fullName,
-            role: 'Admin',
-          },
-        },
-      });
-
-      if (error) return { error: error.message };
-
-      if (data.user) {
-        await supabase.from('profiles').upsert({
-          id: data.user.id,
-          email,
-          full_name: fullName,
-          role: 'Admin',
-        });
-      }
-
-      setHasAdmin(true);
-      return { error: null };
-    } catch (err: any) {
-      return { error: err?.message || 'Registration failed' };
-    }
+    return signUp(email, pass, fullName);
   };
 
   const createStaffAccount = async (email: string, pass: string, fullName: string, selectedRole: UserRole) => {
     if (!isSupabaseConfigured() || !supabase) {
-      // Local mode staff creation
-      const newProf: UserProfile = {
-        id: `user_${Date.now()}`,
-        email,
-        role: selectedRole,
-        fullName,
-      };
-
-      const existingStr = localStorage.getItem('cod_registered_users');
-      let list: UserProfile[] = [];
-      if (existingStr) {
-        try {
-          list = JSON.parse(existingStr);
-        } catch {}
-      }
-      list.push(newProf);
-      localStorage.setItem('cod_registered_users', JSON.stringify(list));
-      return { error: null };
+      return { error: 'Supabase service is not connected.' };
     }
 
     try {
-      // Call Supabase sign up (or create profile record)
       const { data, error } = await supabase.auth.signUp({
         email,
         password: pass,
@@ -395,7 +265,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       return { error: null };
     } catch (err: any) {
-      return { error: err?.message || 'User creation failed' };
+      return { error: err?.message || 'User creation failed.' };
     }
   };
 
@@ -403,18 +273,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isSupabaseConfigured() && supabase) {
       await supabase.auth.signOut();
     }
-    localStorage.removeItem('cod_auth_demo_user');
-    sessionStorage.removeItem('cod_auth_demo_user');
     setUser(null);
     setProfile(null);
   };
 
   const resetPassword = async (email: string) => {
     if (!isSupabaseConfigured() || !supabase) {
-      return {
-        error: null,
-        message: 'Local Demo Mode: In Supabase Cloud mode, a password reset link will be sent to your email.',
-      };
+      return { error: 'Supabase authentication service is not connected.' };
     }
 
     try {
@@ -445,13 +310,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (err) {
         console.warn('Failed querying profiles:', err);
       }
-    }
-
-    const localUsersStr = localStorage.getItem('cod_registered_users');
-    if (localUsersStr) {
-      try {
-        return JSON.parse(localUsersStr);
-      } catch {}
     }
 
     if (profile) {

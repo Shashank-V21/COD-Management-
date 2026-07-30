@@ -56,7 +56,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
     setSubmitting(true);
     try {
-      const res = await signIn(signInEmail, signInPassword, rememberMe);
+      const res = await signIn(signInEmail, signInPassword);
       if (res.error) {
         setErrorMsg(res.error);
       } else {
