@@ -16,11 +16,11 @@ import { RiderManagement } from './components/RiderManagement';
 import { DailyClosingModal } from './components/DailyClosingModal';
 import { AuditLogsView } from './components/AuditLogsView';
 import { PendingCodView } from './components/PendingCodView';
-import { AuthModal } from './components/AuthModal';
+import { LoginPage } from './components/LoginPage';
 
-import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, Clock } from 'lucide-react';
+import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, Clock, Truck, Loader2 } from 'lucide-react';
 
-function AppContent() {
+function ProtectedDashboard() {
   const { user, profile, role } = useAuth();
 
   const [selectedDate, setSelectedDate] = useState<string>(getTodayFormattedDate());
@@ -36,7 +36,6 @@ function AppContent() {
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
   const [receiptTransaction, setReceiptTransaction] = useState<Transaction | null>(null);
   const [isClosingModalOpen, setIsClosingModalOpen] = useState<boolean>(false);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
   // Load Transactions for Selected Date
   const loadTransactions = async (dateStr: string) => {
@@ -161,7 +160,6 @@ function AppContent() {
           setIsClosingModalOpen(true);
         }}
         onOpenAddRiderModal={() => setActiveTab('riders')}
-        onOpenAuthModal={() => setIsAuthModalOpen(true)}
         riderCount={riders.length}
       />
 
@@ -323,7 +321,7 @@ function AppContent() {
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-4 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>© 2026 COD Management System • Multi-User Supabase Cloud Engine</p>
+          <p>© 2026 COD Management System • Corporate Enterprise Edition</p>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-bold border border-emerald-200">
               <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Excel Storage:
@@ -361,19 +359,77 @@ function AppContent() {
         selectedDate={selectedDate}
         transactions={transactions}
       />
-
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-      />
     </div>
   );
+}
+
+function MainAppRouter() {
+  const { user, loading } = useAuth();
+  const [currentPath, setCurrentPath] = useState<string>(window.location.pathname);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (path: '/login' | '/dashboard') => {
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, '', path);
+    }
+    setCurrentPath(path);
+  };
+
+  // Auth Redirect Enforcement
+  useEffect(() => {
+    if (loading) return;
+
+    if (!user) {
+      // Unauthenticated user must be redirected to /login
+      if (currentPath !== '/login') {
+        navigateTo('/login');
+      }
+    } else {
+      // Authenticated user on /login or / must be redirected to /dashboard
+      if (currentPath === '/login' || currentPath === '/') {
+        navigateTo('/dashboard');
+      }
+    }
+  }, [user, loading, currentPath]);
+
+  // Loading Screen
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 text-slate-900">
+        <div className="flex items-center space-x-3 mb-4">
+          <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-500/20">
+            <Truck className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-900">COD Management System</h1>
+            <p className="text-xs text-slate-500 font-medium">Authenticating Session...</p>
+          </div>
+        </div>
+        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  // If user is not authenticated -> Render Login Page exclusively
+  if (!user) {
+    return <LoginPage onSuccess={() => navigateTo('/dashboard')} />;
+  }
+
+  // If user is authenticated -> Render Protected Dashboard
+  return <ProtectedDashboard />;
 }
 
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <MainAppRouter />
     </AuthProvider>
   );
 }
