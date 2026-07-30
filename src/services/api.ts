@@ -78,6 +78,17 @@ function saveLocalTransactions(txs: Transaction[]): void {
   }
 }
 
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function getLocalAuditLogs(): AuditLog[] {
   try {
     const raw = localStorage.getItem(KEYS.AUDIT_LOGS);
@@ -95,7 +106,7 @@ function addLocalAuditLog(
   try {
     const logs = getLocalAuditLogs();
     const newLog: AuditLog = {
-      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: generateUUID(),
       timestamp: new Date().toISOString(),
       action,
       details,
@@ -105,13 +116,17 @@ function addLocalAuditLog(
     localStorage.setItem(KEYS.AUDIT_LOGS, JSON.stringify(logs.slice(0, 200)));
 
     if (isSupabaseConfigured() && supabase) {
-      supabase.from('audit_logs').insert({
-        id: newLog.id,
-        timestamp: newLog.timestamp,
-        action: newLog.action,
-        details: newLog.details,
-        user_email: user,
-      }).then();
+      supabase.auth.getUser().then(({ data }) => {
+        const userId = data?.user?.id || null;
+        supabase.from('audit_logs').insert({
+          id: newLog.id,
+          timestamp: newLog.timestamp,
+          action: newLog.action,
+          details: newLog.details,
+          user_email: user,
+          user_id: userId,
+        }).then();
+      });
     }
   } catch (err) {
     console.error('Failed to write local audit log:', err);
@@ -285,12 +300,12 @@ export const api = {
   },
 
   async createTransaction(payload: Partial<Transaction>, userEmail?: string): Promise<Transaction> {
-    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const txId = generateUUID();
     const status = payload.paymentStatus === 'Pending' ? 'Pending' : 'Paid';
     const pending = status === 'Pending' ? Math.max(0, Number(payload.pendingAmount) || 0) : 0;
     const initialHistory: PaymentHistoryEntry[] = [
       {
-        id: `pay_${Date.now()}`,
+        id: generateUUID(),
         date: payload.date || new Date().toISOString().split('T')[0],
         time: payload.time || '',
         amountReceived: (Number(payload.cashAmount) || 0) + (Number(payload.onlineAmount) || 0),
@@ -320,6 +335,7 @@ export const api = {
 
     if (isSupabaseConfigured() && supabase) {
       try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
         const { error } = await supabase.from('transactions').insert({
           id: newTx.id,
           date: newTx.date,
@@ -334,7 +350,7 @@ export const api = {
           payment_status: newTx.paymentStatus,
           pending_amount: newTx.pendingAmount,
           payment_history: newTx.paymentHistory,
-          created_by: userEmail || 'Staff',
+          created_by: authUser?.id || null,
         });
 
         if (!error) {
@@ -575,7 +591,7 @@ export const api = {
         throw new Error('Rider with this name already exists');
       }
       const newRider: Rider = {
-        id: `rider_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id: generateUUID(),
         name: trimmedName,
         phone: rider.phone?.trim() || '',
         vehicleNumber: rider.vehicleNumber?.trim() || '',
@@ -669,6 +685,137 @@ export const api = {
     }));
 
     return data.logs || getLocalAuditLogs();
+  },
+
+  // Daily Closings
+  async getDailyClosings(): Promise<DailyClosingReport[]> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { data, error } = await supabase.from('daily_closings').select('*').order('date', { ascending: false });
+        if (!error && data) {
+          return data.map((item) => ({
+            date: item.date,
+            closedAt: item.closed_at,
+            totalTransactions: item.total_transactions,
+            totalCod: Number(item.total_cod) || 0,
+            totalCash: Number(item.total_cash) || 0,
+            totalOnline: Number(item.total_online) || 0,
+            shashankOnline: Number(item.shashank_online) || 0,
+            akshayOnline: Number(item.akshay_online) || 0,
+            totalRiders: item.total_riders,
+            status: item.status,
+            notes: item.notes || '',
+          }));
+        }
+      } catch (e) {
+        console.warn('Supabase getDailyClosings failed:', e);
+      }
+    }
+
+    const data = await safeFetchJson<{ closings: DailyClosingReport[] }>('/api/daily-closings', undefined, async () => ({
+      closings: [],
+    }));
+
+    return data.closings || [];
+  },
+
+  async saveDailyClosing(closing: DailyClosingReport, userEmail?: string): Promise<void> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        await supabase.from('daily_closings').upsert({
+          date: closing.date,
+          closed_at: closing.closedAt,
+          total_transactions: closing.totalTransactions,
+          total_cod: closing.totalCod,
+          total_cash: closing.totalCash,
+          total_online: closing.totalOnline,
+          shashank_online: closing.shashankOnline,
+          akshay_online: closing.akshayOnline,
+          total_riders: closing.totalRiders,
+          status: closing.status,
+          notes: closing.notes || '',
+        });
+      } catch (err) {
+        console.warn('Supabase daily closing save failed:', err);
+      }
+    }
+
+    await safeFetchJson<{ success: boolean }>(
+      '/api/daily-closings',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(closing),
+      },
+      async () => {
+        addLocalAuditLog('CLOSING', `Recorded daily closing for ${closing.date} (${closing.status})`, userEmail);
+        return { success: true };
+      }
+    );
+  },
+
+  // Daily Backup System
+  async getBackups(): Promise<import('../types').BackupFile[]> {
+    // 1. Try Supabase Storage list first
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { fetchSupabaseBackupsList } = await import('../lib/backupService');
+        const sbList = await fetchSupabaseBackupsList();
+        if (sbList.length > 0) {
+          return sbList;
+        }
+      } catch (err) {
+        console.warn('Supabase backups list failed:', err);
+      }
+    }
+
+    // 2. Fallback to Express server API
+    const data = await safeFetchJson<{ backups: import('../types').BackupFile[] }>('/api/backups', undefined, async () => ({
+      backups: [],
+    }));
+
+    return data.backups || [];
+  },
+
+  async generateDailyBackup(date?: string, userEmail?: string): Promise<{ success: boolean; message: string; fileName: string }> {
+    const targetDate = date || new Date().toISOString().split('T')[0];
+
+    // Try server endpoint first
+    try {
+      const data = await safeFetchJson<{ success: boolean; message: string; fileName: string }>(
+        '/api/backups/generate',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: targetDate }),
+        }
+      );
+      if (data && data.success) {
+        return data;
+      }
+    } catch {}
+
+    // Pure Client-side Fallback (if server not running)
+    const { createBackupExcelWorkbook, uploadBackupToSupabase } = await import('../lib/backupService');
+    const riders = await this.getRiders();
+    const transactions = await this.getTransactions();
+    const dailyClosings = await this.getDailyClosings();
+    const auditLogs = await this.getAuditLogs();
+
+    const workbook = await createBackupExcelWorkbook({ riders, transactions, dailyClosings, auditLogs });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const fileName = `COD_${targetDate}.xlsx`;
+
+    const uploadRes = await uploadBackupToSupabase(fileName, buffer);
+    addLocalAuditLog('CREATE', `Generated daily backup ${fileName}`, userEmail);
+
+    return {
+      success: true,
+      fileName,
+      message: uploadRes.alreadyExists
+        ? `Backup ${fileName} is safely preserved in Supabase Storage (non-overwrite mode).`
+        : `Daily backup ${fileName} created and stored successfully!`,
+    };
   },
 
   // Excel file direct link

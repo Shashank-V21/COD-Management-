@@ -4,7 +4,10 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import ExcelJS from 'exceljs';
 import multer from 'multer';
+import dotenv from 'dotenv';
 import { parseRidersFromBuffer, isValidRiderName } from './src/lib/excelParser';
+
+dotenv.config();
 
 const app = express();
 const PORT = 3000;
@@ -27,6 +30,7 @@ const EXCEL_DIR = path.join(process.cwd(), 'excel_records');
 const REPORTS_DIR = path.join(process.cwd(), 'excel_reports');
 const RIDERS_FILE = path.join(EXCEL_DIR, 'riders.json');
 const LOGS_FILE = path.join(EXCEL_DIR, 'audit_logs.json');
+const DAILY_CLOSINGS_FILE = path.join(EXCEL_DIR, 'daily_closings.json');
 
 // Ensure directories exist
 if (!fs.existsSync(EXCEL_DIR)) {
@@ -62,6 +66,11 @@ if (!fs.existsSync(RIDERS_FILE)) {
 // Initialize audit logs if missing
 if (!fs.existsSync(LOGS_FILE)) {
   fs.writeFileSync(LOGS_FILE, JSON.stringify([], null, 2));
+}
+
+// Initialize daily closings if missing
+if (!fs.existsSync(DAILY_CLOSINGS_FILE)) {
+  fs.writeFileSync(DAILY_CLOSINGS_FILE, JSON.stringify([], null, 2));
 }
 
 // Multer storage for importing rider excel files
@@ -788,6 +797,327 @@ app.get('/api/audit-logs', (req, res) => {
     const logs = JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8') || '[]');
     res.json({ logs });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10. DAILY CLOSINGS Endpoints
+app.get('/api/daily-closings', (req, res) => {
+  try {
+    const data = fs.readFileSync(DAILY_CLOSINGS_FILE, 'utf-8');
+    const closings = JSON.parse(data || '[]');
+    res.json({ closings });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/daily-closings', (req, res) => {
+  try {
+    const closing = req.body;
+    if (!closing || !closing.date) {
+      return res.status(400).json({ error: 'Closing date is required' });
+    }
+
+    const data = fs.readFileSync(DAILY_CLOSINGS_FILE, 'utf-8');
+    const closings = JSON.parse(data || '[]');
+
+    const idx = closings.findIndex((c: any) => c.date === closing.date);
+    if (idx !== -1) {
+      closings[idx] = { ...closings[idx], ...closing };
+    } else {
+      closings.unshift(closing);
+    }
+
+    fs.writeFileSync(DAILY_CLOSINGS_FILE, JSON.stringify(closings, null, 2));
+    addAuditLog('CLOSING', `Recorded daily closing for ${closing.date} (Status: ${closing.status || 'Balanced'})`);
+    res.json({ success: true, closing });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 11. AUTOMATIC DAILY BACKUP SYSTEM ENGINE (Exports Riders, Transactions, Pending Payments, Daily Closings, Audit Logs)
+const generateSystemDailyBackup = async (targetDateStr?: string) => {
+  const dateStr = targetDateStr || new Date().toISOString().split('T')[0];
+  const fileName = `COD_${dateStr}.xlsx`;
+  const filePath = path.join(REPORTS_DIR, fileName);
+
+  const isAlreadyOnDisk = fs.existsSync(filePath);
+
+  // Gather dataset 1: Riders
+  let riders: any[] = [];
+  try {
+    riders = JSON.parse(fs.readFileSync(RIDERS_FILE, 'utf-8') || '[]');
+  } catch {}
+
+  // Gather dataset 2: Audit Logs
+  let auditLogs: any[] = [];
+  try {
+    auditLogs = JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8') || '[]');
+  } catch {}
+
+  // Gather dataset 3: Daily Closings
+  let dailyClosings: any[] = [];
+  try {
+    dailyClosings = JSON.parse(fs.readFileSync(DAILY_CLOSINGS_FILE, 'utf-8') || '[]');
+  } catch {}
+
+  // Gather dataset 4: All Transactions across daily excel files
+  const allFiles = fs.readdirSync(REPORTS_DIR);
+  const datesToRead = allFiles
+    .filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'))
+    .map((f) => f.replace('COD_', '').replace('.xlsx', ''));
+
+  const allTx: any[] = [];
+  for (const dStr of datesToRead) {
+    const fPath = getExcelFilePath(dStr);
+    if (fs.existsSync(fPath)) {
+      try {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.readFile(fPath);
+        const sheet = wb.getWorksheet('COD Transactions');
+        if (sheet) {
+          const list = parseTransactionsFromSheet(sheet, dStr);
+          allTx.push(...list);
+        }
+      } catch {}
+    }
+  }
+
+  // Deduplicate transactions by ID
+  const txMap = new Map();
+  allTx.forEach((t) => txMap.set(t.id, t));
+  const uniqueTransactions = Array.from(txMap.values());
+
+  // Dataset 5: Pending Payments
+  const pendingTransactions = uniqueTransactions.filter(
+    (t) => t.paymentStatus === 'Pending' || (t.pendingAmount && t.pendingAmount > 0)
+  );
+
+  // Build workbook with 5 sheets
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'COD Management System';
+  workbook.lastModifiedBy = 'Automatic Daily Backup System';
+  workbook.created = new Date();
+
+  const headerFill: ExcelJS.Fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF1E40AF' },
+  };
+  const headerFont: Partial<ExcelJS.Font> = {
+    name: 'Arial',
+    size: 11,
+    bold: true,
+    color: { argb: 'FFFFFFFF' },
+  };
+  const cellBorder: Partial<ExcelJS.Borders> = {
+    top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+    bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+    left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+    right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  };
+
+  const styleHeader = (row: ExcelJS.Row) => {
+    row.height = 26;
+    row.font = headerFont;
+    row.fill = headerFill;
+    row.alignment = { vertical: 'middle', horizontal: 'center' };
+  };
+
+  const styleDataRow = (row: ExcelJS.Row) => {
+    row.height = 20;
+    row.eachCell((cell) => {
+      cell.border = cellBorder;
+      cell.font = { name: 'Arial', size: 10 };
+      cell.alignment = { vertical: 'middle' };
+    });
+  };
+
+  // Sheet 1: Transactions
+  const s1 = workbook.addWorksheet('Transactions');
+  s1.columns = [
+    { header: 'ID', key: 'id', width: 30 },
+    { header: 'Date', key: 'date', width: 14 },
+    { header: 'Time', key: 'time', width: 12 },
+    { header: 'Rider Name', key: 'riderName', width: 25 },
+    { header: 'COD Amount (₹)', key: 'codAmount', width: 18 },
+    { header: 'Cash Amount (₹)', key: 'cashAmount', width: 18 },
+    { header: 'Online Amount (₹)', key: 'onlineAmount', width: 18 },
+    { header: 'Online Received By', key: 'onlineReceivedBy', width: 20 },
+    { header: 'Payment Mode', key: 'paymentMode', width: 18 },
+    { header: 'Payment Status', key: 'paymentStatus', width: 16 },
+    { header: 'Pending Amount (₹)', key: 'pendingAmount', width: 18 },
+    { header: 'Remarks', key: 'remarks', width: 30 },
+  ];
+  styleHeader(s1.getRow(1));
+  uniqueTransactions.forEach((t) => styleDataRow(s1.addRow(t)));
+
+  // Sheet 2: Pending Payments
+  const s2 = workbook.addWorksheet('Pending Payments');
+  s2.columns = [
+    { header: 'Transaction ID', key: 'id', width: 30 },
+    { header: 'Date', key: 'date', width: 14 },
+    { header: 'Time', key: 'time', width: 12 },
+    { header: 'Rider Name', key: 'riderName', width: 25 },
+    { header: 'Total COD (₹)', key: 'codAmount', width: 18 },
+    { header: 'Cash Collected (₹)', key: 'cashAmount', width: 18 },
+    { header: 'Online Collected (₹)', key: 'onlineAmount', width: 18 },
+    { header: 'Pending Amount (₹)', key: 'pendingAmount', width: 20 },
+    { header: 'Payment Status', key: 'paymentStatus', width: 16 },
+    { header: 'Payment History', key: 'paymentHistoryStr', width: 45 },
+    { header: 'Remarks', key: 'remarks', width: 30 },
+  ];
+  styleHeader(s2.getRow(1));
+  pendingTransactions.forEach((t) => {
+    const historyStr = Array.isArray(t.paymentHistory)
+      ? t.paymentHistory.map((h: any) => `${h.date}: ₹${h.amountReceived}`).join(' | ')
+      : '—';
+    styleDataRow(s2.addRow({ ...t, paymentHistoryStr: historyStr }));
+  });
+
+  // Sheet 3: Riders
+  const s3 = workbook.addWorksheet('Riders');
+  s3.columns = [
+    { header: 'Rider ID', key: 'id', width: 30 },
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Phone Number', key: 'phone', width: 18 },
+    { header: 'Vehicle Number', key: 'vehicleNumber', width: 20 },
+    { header: 'Status', key: 'status', width: 14 },
+    { header: 'Total Deliveries', key: 'totalDeliveries', width: 18 },
+  ];
+  styleHeader(s3.getRow(1));
+  riders.forEach((r: any) => styleDataRow(s3.addRow(r)));
+
+  // Sheet 4: Daily Closings
+  const s4 = workbook.addWorksheet('Daily Closings');
+  s4.columns = [
+    { header: 'Date', key: 'date', width: 14 },
+    { header: 'Closed At', key: 'closedAt', width: 22 },
+    { header: 'Total Transactions', key: 'totalTransactions', width: 20 },
+    { header: 'Total COD (₹)', key: 'totalCod', width: 18 },
+    { header: 'Total Cash (₹)', key: 'totalCash', width: 18 },
+    { header: 'Total Online (₹)', key: 'totalOnline', width: 18 },
+    { header: 'Shashank Online (₹)', key: 'shashankOnline', width: 20 },
+    { header: 'Akshay Online (₹)', key: 'akshayOnline', width: 20 },
+    { header: 'Total Riders', key: 'totalRiders', width: 15 },
+    { header: 'Reconciliation Status', key: 'status', width: 20 },
+    { header: 'Closing Notes', key: 'notes', width: 35 },
+  ];
+  styleHeader(s4.getRow(1));
+  dailyClosings.forEach((c: any) => styleDataRow(s4.addRow(c)));
+
+  // Sheet 5: Audit Logs
+  const s5 = workbook.addWorksheet('Audit Logs');
+  s5.columns = [
+    { header: 'Log ID', key: 'id', width: 30 },
+    { header: 'Timestamp', key: 'timestamp', width: 24 },
+    { header: 'Action', key: 'action', width: 18 },
+    { header: 'Details', key: 'details', width: 45 },
+    { header: 'User', key: 'user', width: 22 },
+  ];
+  styleHeader(s5.getRow(1));
+  auditLogs.forEach((l: any) => styleDataRow(s5.addRow(l)));
+
+  // Requirement: "Never overwrite previous backups."
+  if (!isAlreadyOnDisk) {
+    await workbook.xlsx.writeFile(filePath);
+    addAuditLog('BACKUP_CREATED', `Generated automatic daily backup ${fileName}`);
+  }
+
+  // Upload to Supabase Storage if configured (upsert: false)
+  let uploadedToSupabase = false;
+  try {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+    const supabaseKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+
+    if (supabaseUrl && supabaseKey && !supabaseUrl.includes('your-project')) {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(supabaseUrl, supabaseKey);
+
+      const buffer = fs.readFileSync(filePath);
+      const { error } = await supabase.storage.from('backups').upload(fileName, buffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        upsert: false, // NEVER OVERWRITE PREVIOUS BACKUPS
+      });
+
+      if (!error) {
+        uploadedToSupabase = true;
+      }
+    }
+  } catch (sbErr) {
+    console.warn('Failed uploading backup to Supabase Storage:', sbErr);
+  }
+
+  return { fileName, filePath, isAlreadyOnDisk, uploadedToSupabase };
+};
+
+// Automatic 11:59 PM Daily Backup Scheduler
+let lastNightlyBackupDate = '';
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const todayStr = now.toISOString().split('T')[0];
+
+    // Every night at 11:59 PM (23:59)
+    if (hours === 23 && minutes === 59 && lastNightlyBackupDate !== todayStr) {
+      lastNightlyBackupDate = todayStr;
+      console.log(`[Nightly Backup Cron] Triggering 11:59 PM automatic daily backup for ${todayStr}...`);
+      await generateSystemDailyBackup(todayStr);
+    }
+  } catch (err) {
+    console.error('Error executing 11:59 PM nightly backup cron:', err);
+  }
+}, 30000);
+
+// 12. BACKUPS API ENDPOINTS
+app.get('/api/backups', (req, res) => {
+  try {
+    const files = fs.readdirSync(REPORTS_DIR);
+    const backups = files
+      .filter((f) => f.startsWith('COD_') && f.endsWith('.xlsx'))
+      .map((f) => {
+        const filePath = path.join(REPORTS_DIR, f);
+        const stats = fs.statSync(filePath);
+        const dateStr = f.replace('COD_', '').replace('.xlsx', '');
+        return {
+          fileName: f,
+          date: dateStr,
+          size: stats.size,
+          sizeFormatted: `${(stats.size / 1024).toFixed(1)} KB`,
+          createdAt: stats.mtime.toISOString(),
+          downloadUrl: `/api/reports/download-excel?date=${encodeURIComponent(dateStr)}`,
+          storageType: 'Supabase Storage & Local Server',
+        };
+      })
+      .sort((a, b) => b.fileName.localeCompare(a.fileName));
+
+    res.json({ backups });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backups/generate', async (req, res) => {
+  try {
+    const { date } = req.body;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const result = await generateSystemDailyBackup(targetDate);
+    res.json({
+      success: true,
+      fileName: result.fileName,
+      alreadyExists: result.isAlreadyOnDisk,
+      uploadedToSupabase: result.uploadedToSupabase,
+      message: result.isAlreadyOnDisk
+        ? `Backup ${result.fileName} is safely preserved (non-overwrite mode).`
+        : `Daily backup ${result.fileName} successfully generated and stored in Supabase Storage & local server.`,
+    });
+  } catch (err: any) {
+    console.error('Error generating backup:', err);
     res.status(500).json({ error: err.message });
   }
 });

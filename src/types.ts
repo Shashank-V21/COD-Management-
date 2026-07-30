@@ -94,3 +94,13 @@ export interface UserProfile {
   createdAt?: string;
 }
 
+export interface BackupFile {
+  fileName: string;
+  date: string;
+  size: number;
+  sizeFormatted: string;
+  createdAt: string;
+  downloadUrl: string;
+  storageType: 'Supabase Storage' | 'Local System' | 'Supabase Storage & Local Server';
+}
+

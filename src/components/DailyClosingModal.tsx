@@ -4,6 +4,7 @@ import { formatCurrency, formatDisplayDate, calculateStats } from '../lib/utils'
 import { ShieldCheck, X, Printer, CheckCircle2, AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { api } from '../services/api';
 
 interface DailyClosingModalProps {
   isOpen: boolean;
@@ -155,7 +156,24 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
 
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
+              try {
+                await api.saveDailyClosing({
+                  date: selectedDate,
+                  closedAt: new Date().toISOString(),
+                  totalTransactions: stats.totalTransactions,
+                  totalCod: stats.totalCodCollected,
+                  totalCash: stats.cashCollection,
+                  totalOnline: stats.onlineCollection,
+                  shashankOnline: stats.onlineByShashank,
+                  akshayOnline: stats.onlineByAkshay,
+                  totalRiders: stats.totalRidersPaid,
+                  status: cashDiscrepancy === 0 ? 'Balanced' : 'Discrepancy',
+                  notes: closingNotes,
+                });
+              } catch (e) {
+                console.error('Failed saving daily closing:', e);
+              }
               setIsCompleted(true);
               setTimeout(() => {
                 setIsCompleted(false);
