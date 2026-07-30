@@ -1,5 +1,6 @@
-import { Transaction, Rider, AuditLog, PaymentMode, OnlineReceiver, PaymentHistoryEntry } from '../types';
+import { Transaction, Rider, AuditLog, PaymentMode, OnlineReceiver, PaymentHistoryEntry, DailyClosingReport } from '../types';
 import { parseRidersFromBuffer, isValidRiderName } from '../lib/excelParser';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 // Local storage fallback helpers for resilience across hosting environments (Express vs Vercel Static)
 const KEYS = {
@@ -7,6 +8,23 @@ const KEYS = {
   TRANSACTIONS: 'cod_app_transactions',
   AUDIT_LOGS: 'cod_app_audit_logs',
 };
+
+// Realtime subscription helper for multi-user sync
+export function subscribeToRealtimeChanges(onUpdate: () => void) {
+  if (!isSupabaseConfigured() || !supabase) return () => {};
+
+  const channel = supabase
+    .channel('cod-app-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => onUpdate())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'riders' }, () => onUpdate())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closings' }, () => onUpdate())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => onUpdate())
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
 
 // Auto-purge any stale browser cached riders on first load after directory reset
 if (typeof window !== 'undefined') {
@@ -85,10 +103,21 @@ function addLocalAuditLog(
     };
     logs.unshift(newLog);
     localStorage.setItem(KEYS.AUDIT_LOGS, JSON.stringify(logs.slice(0, 200)));
+
+    if (isSupabaseConfigured() && supabase) {
+      supabase.from('audit_logs').insert({
+        id: newLog.id,
+        timestamp: newLog.timestamp,
+        action: newLog.action,
+        details: newLog.details,
+        user_email: user,
+      }).then();
+    }
   } catch (err) {
     console.error('Failed to write local audit log:', err);
   }
 }
+
 
 /**
  * Safe fetch helper that handles Content-Type validation and non-JSON HTML error responses
@@ -164,7 +193,54 @@ export const api = {
     onlineReceiver?: string;
     paymentStatus?: string;
   }): Promise<Transaction[]> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        let query = supabase.from('transactions').select('*');
+
+        if (params?.date && params.date !== 'all') {
+          query = query.eq('date', params.date);
+        } else if (params?.startDate && params?.endDate) {
+          query = query.gte('date', params.startDate).lte('date', params.endDate);
+        }
+        if (params?.paymentMode && params.paymentMode !== 'All') {
+          query = query.eq('payment_mode', params.paymentMode);
+        }
+        if (params?.onlineReceiver && params.onlineReceiver !== 'All') {
+          query = query.eq('online_received_by', params.onlineReceiver);
+        }
+        if (params?.paymentStatus && params.paymentStatus !== 'All') {
+          query = query.eq('payment_status', params.paymentStatus);
+        }
+
+        const { data, error } = await query.order('date', { ascending: false }).order('time', { ascending: false });
+
+        if (!error && data) {
+          const mapped: Transaction[] = data.map((item) => ({
+            id: item.id,
+            date: item.date,
+            time: item.time,
+            riderName: item.rider_name,
+            codAmount: Number(item.cod_amount) || 0,
+            cashAmount: Number(item.cash_amount) || 0,
+            onlineAmount: Number(item.online_amount) || 0,
+            onlineReceivedBy: (item.online_received_by as OnlineReceiver | '') || '',
+            paymentMode: item.payment_mode as PaymentMode,
+            remarks: item.remarks || '',
+            createdAt: item.created_at,
+            paymentStatus: item.payment_status as any,
+            pendingAmount: Number(item.pending_amount) || 0,
+            paymentHistory: Array.isArray(item.payment_history) ? item.payment_history : [],
+          }));
+          saveLocalTransactions(mapped);
+          return mapped;
+        }
+      } catch (e) {
+        console.warn('Supabase getTransactions failed:', e);
+      }
+    }
+
     const query = new URLSearchParams();
+
     if (params?.date) query.append('date', params.date);
     if (params?.startDate) query.append('startDate', params.startDate);
     if (params?.endDate) query.append('endDate', params.endDate);
@@ -208,44 +284,81 @@ export const api = {
     return txs;
   },
 
-  async createTransaction(payload: Partial<Transaction>): Promise<Transaction> {
-    const fallback = () => {
-      const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const status = payload.paymentStatus === 'Pending' ? 'Pending' : 'Paid';
-      const pending = status === 'Pending' ? Math.max(0, Number(payload.pendingAmount) || 0) : 0;
-      const initialHistory: PaymentHistoryEntry[] = [
-        {
-          id: `pay_${Date.now()}`,
-          date: payload.date || new Date().toISOString().split('T')[0],
-          time: payload.time || '',
-          amountReceived: (Number(payload.cashAmount) || 0) + (Number(payload.onlineAmount) || 0),
-          paymentMode: payload.paymentMode || 'Cash',
-          onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
-          remarks: payload.remarks || 'Initial Payment',
-          remainingPending: pending,
-        },
-      ];
-
-      const newTx: Transaction = {
-        id: txId,
+  async createTransaction(payload: Partial<Transaction>, userEmail?: string): Promise<Transaction> {
+    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const status = payload.paymentStatus === 'Pending' ? 'Pending' : 'Paid';
+    const pending = status === 'Pending' ? Math.max(0, Number(payload.pendingAmount) || 0) : 0;
+    const initialHistory: PaymentHistoryEntry[] = [
+      {
+        id: `pay_${Date.now()}`,
         date: payload.date || new Date().toISOString().split('T')[0],
-        time: payload.time || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-        riderName: payload.riderName || 'Unknown',
-        codAmount: Number(payload.codAmount) || 0,
-        cashAmount: Number(payload.cashAmount) || 0,
-        onlineAmount: Number(payload.onlineAmount) || 0,
-        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
+        time: payload.time || '',
+        amountReceived: (Number(payload.cashAmount) || 0) + (Number(payload.onlineAmount) || 0),
         paymentMode: payload.paymentMode || 'Cash',
-        remarks: payload.remarks || '',
-        paymentStatus: status,
-        pendingAmount: pending,
-        paymentHistory: initialHistory,
-      };
+        onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
+        remarks: payload.remarks || 'Initial Payment',
+        remainingPending: pending,
+      },
+    ];
+
+    const newTx: Transaction = {
+      id: txId,
+      date: payload.date || new Date().toISOString().split('T')[0],
+      time: payload.time || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+      riderName: payload.riderName || 'Unknown',
+      codAmount: Number(payload.codAmount) || 0,
+      cashAmount: Number(payload.cashAmount) || 0,
+      onlineAmount: Number(payload.onlineAmount) || 0,
+      onlineReceivedBy: (payload.onlineReceivedBy as OnlineReceiver | '') || '',
+      paymentMode: payload.paymentMode || 'Cash',
+      remarks: payload.remarks || '',
+      paymentStatus: status,
+      pendingAmount: pending,
+      paymentHistory: initialHistory,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { error } = await supabase.from('transactions').insert({
+          id: newTx.id,
+          date: newTx.date,
+          time: newTx.time,
+          rider_name: newTx.riderName,
+          cod_amount: newTx.codAmount,
+          cash_amount: newTx.cashAmount,
+          online_amount: newTx.onlineAmount,
+          online_received_by: newTx.onlineReceivedBy,
+          payment_mode: newTx.paymentMode,
+          remarks: newTx.remarks,
+          payment_status: newTx.paymentStatus,
+          pending_amount: newTx.pendingAmount,
+          payment_history: newTx.paymentHistory,
+          created_by: userEmail || 'Staff',
+        });
+
+        if (!error) {
+          const existing = getLocalTransactions();
+          saveLocalTransactions([newTx, ...existing]);
+          addLocalAuditLog(
+            'CREATE',
+            `Added transaction ₹${newTx.codAmount} (${newTx.paymentMode}) for ${newTx.riderName}`,
+            userEmail
+          );
+          return newTx;
+        }
+      } catch (err) {
+        console.error('Supabase write failed:', err);
+      }
+    }
+
+    const fallback = () => {
       const existing = getLocalTransactions();
       saveLocalTransactions([newTx, ...existing]);
       addLocalAuditLog(
         'CREATE',
-        `Added transaction ₹${newTx.codAmount} (${newTx.paymentMode}) for ${newTx.riderName}`
+        `Added transaction ₹${newTx.codAmount} (${newTx.paymentMode}) for ${newTx.riderName}`,
+        userEmail
       );
       return { success: true, transaction: newTx };
     };
@@ -272,14 +385,15 @@ export const api = {
     return created;
   },
 
-  async updateTransaction(id: string, payload: Partial<Transaction>): Promise<void> {
+
+  async updateTransaction(id: string, payload: Partial<Transaction>, userEmail?: string): Promise<void> {
     const fallback = () => {
       const existing = getLocalTransactions();
       const idx = existing.findIndex((t) => t.id === id);
       if (idx !== -1) {
         existing[idx] = { ...existing[idx], ...payload };
         saveLocalTransactions(existing);
-        addLocalAuditLog('UPDATE', `Updated transaction ${id} for ${payload.riderName || existing[idx].riderName}`);
+        addLocalAuditLog('UPDATE', `Updated transaction ${id} for ${payload.riderName || existing[idx].riderName}`, userEmail);
       }
     };
 
@@ -308,7 +422,8 @@ export const api = {
       remarks?: string;
       date?: string;
       time?: string;
-    }
+    },
+    userEmail?: string
   ): Promise<Transaction> {
     const fallback = () => {
       const existing = getLocalTransactions();
@@ -374,7 +489,8 @@ export const api = {
       saveLocalTransactions(existing);
       addLocalAuditLog(
         'UPDATE',
-        `Received ₹${recvNow} from ${tx.riderName}. Remaining Pending: ₹${newPending} (${newStatus})`
+        `Received ₹${recvNow} from ${tx.riderName}. Remaining Pending: ₹${newPending} (${newStatus})`,
+        userEmail
       );
 
       return { success: true, transaction: updatedTx };
@@ -400,12 +516,12 @@ export const api = {
     return updated;
   },
 
-  async deleteTransaction(id: string): Promise<void> {
+  async deleteTransaction(id: string, userEmail?: string): Promise<void> {
     const fallback = () => {
       const existing = getLocalTransactions();
       const filtered = existing.filter((t) => t.id !== id);
       saveLocalTransactions(filtered);
-      addLocalAuditLog('DELETE', `Deleted transaction ${id}`);
+      addLocalAuditLog('DELETE', `Deleted transaction ${id}`, userEmail);
     };
 
     await safeFetchJson<{ success: boolean }>(
@@ -447,7 +563,7 @@ export const api = {
     return getLocalRiders();
   },
 
-  async addRider(rider: { name: string; phone?: string; vehicleNumber?: string }): Promise<Rider> {
+  async addRider(rider: { name: string; phone?: string; vehicleNumber?: string }, userEmail?: string): Promise<Rider> {
     const trimmedName = rider.name.trim();
     if (!trimmedName) {
       throw new Error('Rider name is required');
@@ -468,7 +584,7 @@ export const api = {
       };
       const updated = [newRider, ...existing];
       saveLocalRiders(updated);
-      addLocalAuditLog('CREATE', `Added new rider: ${newRider.name}`);
+      addLocalAuditLog('CREATE', `Added new rider: ${newRider.name}`, userEmail);
       return { success: true, rider: newRider };
     };
 
@@ -493,14 +609,14 @@ export const api = {
     return createdRider;
   },
 
-  async deleteRider(id: string): Promise<void> {
+  async deleteRider(id: string, userEmail?: string): Promise<void> {
     const fallback = () => {
       const existing = getLocalRiders();
       const target = existing.find((r) => r.id === id);
       const filtered = existing.filter((r) => r.id !== id);
       saveLocalRiders(filtered);
       if (target) {
-        addLocalAuditLog('DELETE', `Deleted rider: ${target.name}`);
+        addLocalAuditLog('DELETE', `Deleted rider: ${target.name}`, userEmail);
       }
     };
 
@@ -514,13 +630,13 @@ export const api = {
     );
   },
 
-  async importRiders(file: File): Promise<{ count: number; riders: Rider[] }> {
+  async importRiders(file: File, userEmail?: string): Promise<{ count: number; riders: Rider[] }> {
     const fallback = async () => {
       const buffer = await file.arrayBuffer();
       const existing = getLocalRiders();
       const result = parseRidersFromBuffer(buffer, existing);
       saveLocalRiders(result.riders);
-      addLocalAuditLog('IMPORT_RIDERS', `Imported ${result.count} riders from Excel file`);
+      addLocalAuditLog('IMPORT_RIDERS', `Imported ${result.count} riders from Excel file`, userEmail);
       return { success: true, count: result.count, riders: result.riders };
     };
 
@@ -542,6 +658,7 @@ export const api = {
 
     return { count: data.count, riders: data.riders || getLocalRiders() };
   },
+
 
   // Audit logs
   async getAuditLogs(): Promise<AuditLog[]> {

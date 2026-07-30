@@ -83,3 +83,14 @@ export interface DailyClosingReport {
   status: 'Balanced' | 'Discrepancy';
   notes?: string;
 }
+
+export type UserRole = 'Admin' | 'Staff';
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  role: UserRole;
+  fullName?: string;
+  createdAt?: string;
+}
+

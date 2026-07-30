@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Transaction, Rider, DashboardStats } from './types';
 import { getTodayFormattedDate, calculateStats } from './lib/utils';
-import { api } from './services/api';
+import { api, subscribeToRealtimeChanges } from './services/api';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 import { Header } from './components/Header';
 import { StatsCards } from './components/StatsCards';
@@ -15,10 +16,13 @@ import { RiderManagement } from './components/RiderManagement';
 import { DailyClosingModal } from './components/DailyClosingModal';
 import { AuditLogsView } from './components/AuditLogsView';
 import { PendingCodView } from './components/PendingCodView';
+import { AuthModal } from './components/AuthModal';
 
 import { LayoutDashboard, FileSpreadsheet, TrendingUp, Users, Shield, CheckCircle2, Clock } from 'lucide-react';
 
-export default function App() {
+function AppContent() {
+  const { user, profile, role } = useAuth();
+
   const [selectedDate, setSelectedDate] = useState<string>(getTodayFormattedDate());
   const [activeTab, setActiveTab] = useState<'dashboard' | 'ledger' | 'pending_cod' | 'reports' | 'riders' | 'audit'>('dashboard');
 
@@ -32,7 +36,7 @@ export default function App() {
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
   const [receiptTransaction, setReceiptTransaction] = useState<Transaction | null>(null);
   const [isClosingModalOpen, setIsClosingModalOpen] = useState<boolean>(false);
-  const [isAddRiderModalOpen, setIsAddRiderModalOpen] = useState<boolean>(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
   // Load Transactions for Selected Date
   const loadTransactions = async (dateStr: string) => {
@@ -44,7 +48,7 @@ export default function App() {
     }
   };
 
-  // Load Riders (Starts EMPTY)
+  // Load Riders
   const loadRiders = async () => {
     try {
       const data = await api.getRiders();
@@ -59,42 +63,60 @@ export default function App() {
     Promise.all([loadTransactions(selectedDate), loadRiders()]).finally(() => {
       setIsLoading(false);
     });
+
+    // Real-time synchronization subscription for multi-user cloud updates
+    const unsubscribe = subscribeToRealtimeChanges(() => {
+      loadTransactions(selectedDate);
+      loadRiders();
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [selectedDate]);
 
   // Submit New Transaction
   const handleCreateTransaction = async (data: Partial<Transaction>) => {
-    await api.createTransaction(data);
+    await api.createTransaction(data, user?.email);
     await loadTransactions(selectedDate);
-    await loadRiders(); // Refresh riders count if new
+    await loadRiders();
   };
 
   // Update Transaction
   const handleUpdateTransaction = async (id: string, updated: Partial<Transaction>) => {
-    await api.updateTransaction(id, updated);
+    await api.updateTransaction(id, updated, user?.email);
     await loadTransactions(selectedDate);
   };
 
-  // Delete Transaction
+  // Delete Transaction (Admin Only Rule)
   const handleDeleteTransaction = async (id: string) => {
-    await api.deleteTransaction(id);
+    if (role !== 'Admin') {
+      alert('Action Restricted: Only Hub Admins are permitted to delete transactions from the ledger.');
+      return;
+    }
+    await api.deleteTransaction(id, user?.email);
     await loadTransactions(selectedDate);
   };
 
   // Add Rider
   const handleAddRider = async (newRider: { name: string; phone?: string; vehicleNumber?: string }) => {
-    await api.addRider(newRider);
+    await api.addRider(newRider, user?.email);
     await loadRiders();
   };
 
   // Delete Rider
   const handleDeleteRider = async (id: string) => {
-    await api.deleteRider(id);
+    if (role !== 'Admin') {
+      alert('Action Restricted: Only Hub Admins can remove riders.');
+      return;
+    }
+    await api.deleteRider(id, user?.email);
     await loadRiders();
   };
 
   // Import Riders
   const handleImportRiders = async (file: File) => {
-    const res = await api.importRiders(file);
+    const res = await api.importRiders(file, user?.email);
     await loadRiders();
     return res;
   };
@@ -113,7 +135,7 @@ export default function App() {
       time?: string;
     }
   ) => {
-    await api.receivePendingPayment(id, payload);
+    await api.receivePendingPayment(id, payload, user?.email);
     await loadTransactions(selectedDate);
   };
 
@@ -131,8 +153,15 @@ export default function App() {
       <Header
         selectedDate={selectedDate}
         onDateChange={(d) => setSelectedDate(d)}
-        onOpenClosingModal={() => setIsClosingModalOpen(true)}
+        onOpenClosingModal={() => {
+          if (role !== 'Admin') {
+            alert('Daily Closing is restricted to Hub Admin accounts.');
+            return;
+          }
+          setIsClosingModalOpen(true);
+        }}
         onOpenAddRiderModal={() => setActiveTab('riders')}
+        onOpenAuthModal={() => setIsAuthModalOpen(true)}
         riderCount={riders.length}
       />
 
@@ -294,7 +323,7 @@ export default function App() {
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-4 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>© 2026 COD Management System • Logistics Operations Hub</p>
+          <p>© 2026 COD Management System • Multi-User Supabase Cloud Engine</p>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-bold border border-emerald-200">
               <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Excel Storage:
@@ -332,6 +361,19 @@ export default function App() {
         selectedDate={selectedDate}
         transactions={transactions}
       />
+
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+      />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }

@@ -1,12 +1,13 @@
 import React from 'react';
-import { Truck, Calendar, FileSpreadsheet, ShieldCheck, UserPlus, CheckCircle2 } from 'lucide-react';
-import { formatDisplayDate } from '../lib/utils';
+import { Truck, Calendar, ShieldCheck, UserPlus, CheckCircle2, User, Cloud, Database } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
   selectedDate: string;
   onDateChange: (date: string) => void;
   onOpenClosingModal: () => void;
   onOpenAddRiderModal: () => void;
+  onOpenAuthModal: () => void;
   riderCount: number;
 }
 
@@ -15,8 +16,11 @@ export const Header: React.FC<HeaderProps> = ({
   onDateChange,
   onOpenClosingModal,
   onOpenAddRiderModal,
+  onOpenAuthModal,
   riderCount,
 }) => {
+  const { profile, user, role, isCloudConnected } = useAuth();
+
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
@@ -39,6 +43,32 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Controls: Date Picker & Actions */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {/* Supabase / Auth Indicator Button */}
+            <button
+              onClick={onOpenAuthModal}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all shadow-2xs ${
+                isCloudConnected
+                  ? 'bg-slate-900 text-white border-slate-800 hover:bg-slate-800'
+                  : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              {isCloudConnected ? (
+                <Cloud className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+              ) : (
+                <Database className="w-3.5 h-3.5 text-amber-600" />
+              )}
+              <div className="flex items-center space-x-1.5">
+                <span>{profile?.fullName || (user ? user.email : 'Account / Cloud')}</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-md font-bold text-[10px] ${
+                    role === 'Admin' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'
+                  }`}
+                >
+                  {role}
+                </span>
+              </div>
+            </button>
+
             {/* Active Date Indicator */}
             <div className="flex items-center bg-slate-100 rounded-lg p-1 border border-slate-200 text-xs">
               <div className="flex items-center px-2 py-1 text-slate-600 font-medium">
@@ -81,3 +111,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+
