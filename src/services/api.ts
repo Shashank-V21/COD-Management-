@@ -403,7 +403,13 @@ export const api = {
 
 
   async updateTransaction(id: string, payload: Partial<Transaction>, userEmail?: string): Promise<void> {
-    if (isSupabaseConfigured() && supabase) {
+    const isConfig = isSupabaseConfigured();
+    console.log('[SUPABASE updateTransaction STATUS]', { isConfigured: isConfig, hasSupabaseClient: Boolean(supabase), transactionId: id });
+
+    if (isConfig && supabase) {
+      const { data: authUserData } = await supabase.auth.getUser();
+      const authUserId = authUserData?.user?.id || null;
+
       const updateData: any = {};
       if (payload.date !== undefined) updateData.date = payload.date;
       if (payload.time !== undefined) updateData.time = payload.time;
@@ -419,18 +425,50 @@ export const api = {
       if (payload.paymentHistory !== undefined) updateData.payment_history = payload.paymentHistory;
       updateData.updated_at = new Date().toISOString();
 
-      const { error } = await supabase.from('transactions').update(updateData).eq('id', id);
+      console.log('[SUPABASE UPDATE BEFORE]', {
+        transactionId: id,
+        payment_status: updateData.payment_status,
+        pending_amount: updateData.pending_amount,
+        authenticatedUserId: authUserId,
+        updateData,
+      });
+
+      const { data: updatedRows, error } = await supabase
+        .from('transactions')
+        .update(updateData)
+        .eq('id', id)
+        .select();
+
+      console.log('[SUPABASE UPDATE AFTER]', {
+        transactionId: id,
+        payment_status: updateData.payment_status,
+        pending_amount: updateData.pending_amount,
+        authenticatedUserId: authUserId,
+        supabaseResponse: updatedRows,
+        supabaseError: error,
+        rowsUpdated: updatedRows ? updatedRows.length : 0,
+      });
+
       if (error) {
-        throw new Error(`Failed to update transaction in database: ${error.message}`);
+        const exactErrorMsg = `Supabase Update Failed: [${error.code}] ${error.message}${
+          error.details ? ` - ${error.details}` : ''
+        }`;
+        console.error('[EXACT SUPABASE UPDATE ERROR]', exactErrorMsg, error);
+        throw new Error(exactErrorMsg);
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        const exactErrorMsg = `Supabase Update Failed: 0 rows updated for transaction ID '${id}'. Row not found or RLS policy blocked update.`;
+        console.error('[EXACT SUPABASE UPDATE ERROR]', exactErrorMsg);
+        throw new Error(exactErrorMsg);
       }
 
       try {
-        const authUser = (await supabase.auth.getUser())?.data?.user;
         await supabase.from('audit_logs').insert({
           action: 'UPDATE',
           details: `Updated transaction ${id} for ${payload.riderName || 'Rider'}`,
           user_email: userEmail || 'Authenticated User',
-          user_id: authUser?.id || null,
+          user_id: authUserId,
         });
       } catch (e) {
         console.warn('Audit log insert error:', e);
@@ -446,7 +484,9 @@ export const api = {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to update transaction on server.');
+      const errMsg = err.error || 'Failed to update transaction on server.';
+      console.error('[EXACT EXPRESS API ERROR]', errMsg);
+      throw new Error(errMsg);
     }
   },
 
@@ -470,18 +510,43 @@ export const api = {
       throw new Error('Amount received must be greater than zero.');
     }
 
-    if (isSupabaseConfigured() && supabase) {
-      // 1. Fetch transaction directly from Supabase
+    const isConfig = isSupabaseConfigured();
+    console.log('[SUPABASE CONFIG CHECK]', {
+      isSupabaseConfigured: isConfig,
+      hasSupabaseClient: Boolean(supabase),
+      targetTransactionId: id,
+    });
+
+    if (isConfig && supabase) {
+      // 1. Get authenticated user ID
+      const { data: authUserData } = await supabase.auth.getUser();
+      const authUserId = authUserData?.user?.id || null;
+
+      console.log('[SUPABASE FETCH BEFORE]', {
+        transactionId: id,
+        authenticatedUserId: authUserId,
+      });
+
+      // 2. Fetch transaction directly from Supabase
       const { data: existingTx, error: fetchError } = await supabase
         .from('transactions')
         .select('*')
         .eq('id', id)
         .single();
 
+      console.log('[SUPABASE FETCH AFTER]', {
+        transactionId: id,
+        authenticatedUserId: authUserId,
+        existingTx,
+        fetchError,
+      });
+
       if (fetchError || !existingTx) {
-        throw new Error(
-          `Failed to find transaction in database: ${fetchError?.message || 'Transaction not found'}`
-        );
+        const errorDetails = fetchError
+          ? `Code: ${fetchError.code}, Message: ${fetchError.message}, Details: ${fetchError.details || 'None'}`
+          : 'Transaction row not found in Supabase';
+        console.error('[SUPABASE FETCH ERROR]', errorDetails);
+        throw new Error(`Failed to find transaction in database: ${errorDetails}`);
       }
 
       const currentPending = Number(existingTx.pending_amount) || 0;
@@ -515,9 +580,9 @@ export const api = {
         payload.time ||
         new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-      // Requirement 3: Append record to payment_history with paid_at (current timestamp) and updated_by (current authenticated user)
+      // Append record to payment_history with paid_at (current timestamp) and updated_by (current authenticated user)
       const nowIso = new Date().toISOString();
-      const updatedBy = userEmail || userName || 'Authenticated User';
+      const updatedBy = userEmail || userName || authUserData?.user?.email || 'Authenticated User';
 
       const newEntry: PaymentHistoryEntry = {
         id: `pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -541,38 +606,74 @@ export const api = {
           : `Recv ₹${recvNow}: ${payload.remarks}`;
       }
 
-      // Requirement 1 & 4: Save update successfully to Supabase database
-      const { data: updatedRow, error: updateError } = await supabase
-        .from('transactions')
-        .update({
-          payment_status: newStatus,
-          pending_amount: newPending,
-          cash_amount: newCashTotal,
-          online_amount: newOnlineTotal,
-          online_received_by: (payload.onlineReceivedBy as OnlineReceiver | '') || existingTx.online_received_by || '',
-          payment_mode: finalMode,
-          remarks: updatedRemarks,
-          payment_history: history,
-          updated_at: nowIso,
-        })
-        .eq('id', id)
-        .select()
-        .single();
+      const updatePayload = {
+        payment_status: newStatus,
+        pending_amount: newPending,
+        cash_amount: newCashTotal,
+        online_amount: newOnlineTotal,
+        online_received_by: (payload.onlineReceivedBy as OnlineReceiver | '') || existingTx.online_received_by || '',
+        payment_mode: finalMode,
+        remarks: updatedRemarks,
+        payment_history: history,
+        updated_at: nowIso,
+      };
 
-      if (updateError || !updatedRow) {
-        throw new Error(
-          `Database update failed: ${updateError?.message || 'Could not update transaction in Supabase.'}`
-        );
+      // 1 & 2: Console log before Supabase update
+      console.log('[SUPABASE UPDATE BEFORE]', {
+        transactionId: id,
+        payment_status: newStatus,
+        pending_amount: newPending,
+        authenticatedUserId: authUserId,
+        updatePayload,
+      });
+
+      // Execute update in Supabase and select updated rows
+      const { data: updatedRows, error: updateError } = await supabase
+        .from('transactions')
+        .update(updatePayload)
+        .eq('id', id)
+        .select();
+
+      // 1 & 2: Console log after Supabase update
+      console.log('[SUPABASE UPDATE AFTER]', {
+        transactionId: id,
+        payment_status: newStatus,
+        pending_amount: newPending,
+        authenticatedUserId: authUserId,
+        supabaseResponse: updatedRows,
+        supabaseError: updateError,
+        rowsUpdated: updatedRows ? updatedRows.length : 0,
+      });
+
+      // 3 & 7: Print exact error if update query fails
+      if (updateError) {
+        const exactErrorMsg = `Supabase Update Failed: [${updateError.code}] ${updateError.message}${
+          updateError.details ? ` - Details: ${updateError.details}` : ''
+        }${updateError.hint ? ` - Hint: ${updateError.hint}` : ''}`;
+        console.error('[EXACT SUPABASE UPDATE ERROR]', exactErrorMsg, updateError);
+        throw new Error(exactErrorMsg);
       }
+
+      // 4 & 5: Verify exactly one row was updated
+      if (!updatedRows || updatedRows.length === 0) {
+        const exactErrorMsg = `Supabase Update Failed: 0 rows updated for transaction ID '${id}'. Row not found or RLS policy blocked update.`;
+        console.error('[EXACT SUPABASE UPDATE ERROR]', exactErrorMsg);
+        throw new Error(exactErrorMsg);
+      }
+
+      if (updatedRows.length > 1) {
+        console.warn(`[SUPABASE UPDATE WARNING] Expected 1 row updated, but got ${updatedRows.length} rows.`);
+      }
+
+      const updatedRow = updatedRows[0];
 
       // Record Audit Log in Supabase
       try {
-        const authUser = (await supabase.auth.getUser())?.data?.user;
         await supabase.from('audit_logs').insert({
           action: 'PAYMENT_RECEIVED',
           details: `Marked as Paid / Received ₹${recvNow} from ${existingTx.rider_name}. Remaining Pending: ₹${newPending} (${newStatus})`,
           user_email: updatedBy,
-          user_id: authUser?.id || null,
+          user_id: authUserId,
         });
       } catch (e) {
         console.warn('Audit log write failed:', e);
@@ -598,6 +699,8 @@ export const api = {
       return updatedTx;
     }
 
+    // Fallback if Supabase is not configured
+    console.log('[FALLBACK EXPRESS API] Calling /api/transactions/:id/receive-payment');
     const res = await fetch(`/api/transactions/${id}/receive-payment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -606,7 +709,9 @@ export const api = {
 
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Failed to update transaction on server.');
+      const errMsg = errJson.error || 'Failed to update transaction on server.';
+      console.error('[EXACT EXPRESS API ERROR]', errMsg);
+      throw new Error(errMsg);
     }
 
     const data = await res.json();
