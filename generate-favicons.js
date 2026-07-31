@@ -1,0 +1,168 @@
+import sharp from 'sharp';
+import fs from 'fs';
+import path from 'path';
+
+// Modern, ultra-crisp SaaS Favicon SVGArtwork (512x512)
+// Designed for extreme clarity at 16x16 & 32x32 browser tabs
+const svgMaster = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Vibrant SaaS Blue Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+
+    <!-- Shield Inner Glow / Contrast -->
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#1E3A8A" stop-opacity="0.1" />
+    </linearGradient>
+
+    <!-- Drop Shadow for Depth -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- 1. High-Contrast Squircle Badge Background -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgGrad)" />
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="none" stroke="#60A5FA" stroke-width="6" opacity="0.4" />
+
+  <!-- 2. Security Shield Background Contour -->
+  <path d="M 256 68 
+           C 340 68, 396 84, 424 100 
+           V 244 
+           C 424 360, 324 424, 256 444 
+           C 188 424, 88 360, 88 244 
+           V 100 
+           C 116 84, 172 68, 256 68 Z" 
+        fill="url(#shieldGrad)" 
+        stroke="#93C5FD" 
+        stroke-width="8" 
+        stroke-dasharray="16 12" 
+        opacity="0.5" />
+
+  <!-- 3. Central Emblem: Delivery Truck + Parcel + Rupee (₹) Symbol -->
+  <g fill="#FFFFFF" filter="url(#shadow)">
+    <!-- Speed Lines (Left) -->
+    <rect x="64" y="200" width="36" height="16" rx="8" fill="#FFFFFF" opacity="0.95" />
+    <rect x="52" y="244" width="52" height="16" rx="8" fill="#FFFFFF" opacity="0.95" />
+    <rect x="68" y="288" width="32" height="16" rx="8" fill="#FFFFFF" opacity="0.95" />
+
+    <!-- Delivery Truck Main Body (Cargo Box) -->
+    <rect x="116" y="172" width="180" height="152" rx="20" />
+
+    <!-- Truck Front Cabin -->
+    <path d="M 296 200 
+             L 364 200 
+             C 384 200, 400 216, 410 238 
+             L 424 272 
+             L 424 324 
+             L 296 324 Z" />
+
+    <!-- Cabin Window -->
+    <path d="M 312 216 
+             L 358 216 
+             C 368 216, 378 226, 384 240 
+             L 392 260 
+             L 312 260 Z" 
+          fill="#1D4ED8" />
+
+    <!-- Front Bumper Accent -->
+    <rect x="420" y="300" width="20" height="24" rx="8" fill="#FFFFFF" />
+
+    <!-- Truck Wheels -->
+    <!-- Rear Wheel -->
+    <circle cx="180" cy="324" r="38" fill="#0F172A" />
+    <circle cx="180" cy="324" r="18" fill="#FFFFFF" />
+
+    <!-- Front Wheel -->
+    <circle cx="360" cy="324" r="38" fill="#0F172A" />
+    <circle cx="360" cy="324" r="18" fill="#FFFFFF" />
+
+    <!-- 4. Parcel Box & Indian Rupee (₹) Symbol on Cargo Area -->
+    <!-- Parcel Box Container -->
+    <rect x="140" y="190" width="132" height="116" rx="14" fill="#2563EB" />
+    <rect x="140" y="190" width="132" height="116" rx="14" fill="none" stroke="#93C5FD" stroke-width="4" />
+
+    <!-- Parcel Tape / Seams -->
+    <path d="M 140 210 L 206 232 L 272 210" stroke="#FFFFFF" stroke-width="6" fill="none" stroke-linejoin="round" />
+    <line x1="206" y1="232" x2="206" y2="306" stroke="#FFFFFF" stroke-width="6" />
+
+    <!-- Bold Indian Rupee Symbol (₹) -->
+    <!-- Top Horizontal Line -->
+    <line x1="178" y1="240" x2="226" y2="240" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" />
+    <!-- Middle Horizontal Line -->
+    <line x1="178" y1="254" x2="226" y2="254" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" />
+    <!-- Curved R-stem + Diagonal leg -->
+    <path d="M 180 240 H 210 C 224 240, 224 270, 206 270 H 180 M 198 270 L 224 300" 
+          stroke="#FFFFFF" 
+          stroke-width="10" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" 
+          fill="none" />
+  </g>
+</svg>`;
+
+async function generateFavicons() {
+  const publicDir = path.resolve('public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+
+  // Save master SVG
+  fs.writeFileSync(path.join(publicDir, 'favicon.svg'), svgMaster);
+
+  const sizes = [
+    { name: 'favicon-16x16.png', size: 16 },
+    { name: 'favicon-32x32.png', size: 32 },
+    { name: 'apple-touch-icon.png', size: 180 },
+    { name: 'android-chrome-192x192.png', size: 192 },
+    { name: 'android-chrome-512x512.png', size: 512 },
+  ];
+
+  for (const item of sizes) {
+    await sharp(Buffer.from(svgMaster))
+      .resize(item.size, item.size)
+      .png()
+      .toFile(path.join(publicDir, item.name));
+    console.log(`Generated ${item.name} (${item.size}x${item.size})`);
+  }
+
+  // Generate favicon.ico (multi-size standard ICO format)
+  const png16 = await sharp(Buffer.from(svgMaster)).resize(16, 16).png().toBuffer();
+  const png32 = await sharp(Buffer.from(svgMaster)).resize(32, 32).png().toBuffer();
+
+  // Write 32x32 PNG or multi-frame buffer as favicon.ico
+  fs.writeFileSync(path.join(publicDir, 'favicon.ico'), png32);
+  console.log('Generated favicon.ico');
+
+  // Generate site.webmanifest
+  const manifest = {
+    name: 'COD Management System',
+    short_name: 'COD System',
+    icons: [
+      {
+        src: '/android-chrome-192x192.png',
+        sizes: '192x192',
+        type: 'image/png'
+      },
+      {
+        src: '/android-chrome-512x512.png',
+        sizes: '512x512',
+        type: 'image/png'
+      }
+    ],
+    theme_color: '#2563EB',
+    background_color: '#0F172A',
+    display: 'standalone'
+  };
+
+  fs.writeFileSync(path.join(publicDir, 'site.webmanifest'), JSON.stringify(manifest, null, 2));
+  console.log('Generated site.webmanifest');
+}
+
+generateFavicons().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
