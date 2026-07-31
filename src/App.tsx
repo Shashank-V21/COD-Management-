@@ -43,13 +43,27 @@ function ProtectedDashboard() {
   const [receiptTransaction, setReceiptTransaction] = useState<Transaction | null>(null);
   const [isClosingModalOpen, setIsClosingModalOpen] = useState<boolean>(false);
 
-  // Load Transactions (All transactions to support pending COD across dates + selected date stats)
-  const loadTransactions = async (_dateStr?: string) => {
+  // All Pending COD Transactions (for Pending COD management tab)
+  const [allPendingTransactions, setAllPendingTransactions] = useState<Transaction[]>([]);
+
+  // Load Transactions for active selected date (WHERE date = selectedDate)
+  const loadTransactions = async (dateStr?: string) => {
     try {
-      const data = await api.getTransactions({ date: 'all' });
+      const targetDate = dateStr || selectedDate;
+      const data = await api.getTransactions({ date: targetDate });
       setTransactions(data);
     } catch (err) {
       console.error('Error loading transactions:', err);
+    }
+  };
+
+  // Load All Pending COD Transactions (WHERE payment_status = 'Pending')
+  const loadPendingTransactions = async () => {
+    try {
+      const pendingData = await api.getTransactions({ paymentStatus: 'Pending' });
+      setAllPendingTransactions(pendingData);
+    } catch (err) {
+      console.error('Error loading pending transactions:', err);
     }
   };
 
@@ -65,13 +79,18 @@ function ProtectedDashboard() {
 
   useEffect(() => {
     setIsLoading(true);
-    Promise.all([loadTransactions(selectedDate), loadRiders()]).finally(() => {
+    Promise.all([
+      loadTransactions(selectedDate),
+      loadPendingTransactions(),
+      loadRiders(),
+    ]).finally(() => {
       setIsLoading(false);
     });
 
     // Real-time synchronization subscription for multi-user cloud updates
     const unsubscribe = subscribeToRealtimeChanges(() => {
       loadTransactions(selectedDate);
+      loadPendingTransactions();
       loadRiders();
     });
 
@@ -84,6 +103,7 @@ function ProtectedDashboard() {
   const handleCreateTransaction = async (data: Partial<Transaction>) => {
     await api.createTransaction(data, user?.email);
     await loadTransactions(selectedDate);
+    await loadPendingTransactions();
     await loadRiders();
   };
 
@@ -91,6 +111,7 @@ function ProtectedDashboard() {
   const handleUpdateTransaction = async (id: string, updated: Partial<Transaction>) => {
     await api.updateTransaction(id, updated, user?.email);
     await loadTransactions(selectedDate);
+    await loadPendingTransactions();
   };
 
   // Delete Transaction (Admin Only Rule)
@@ -101,6 +122,7 @@ function ProtectedDashboard() {
     }
     await api.deleteTransaction(id, user?.email);
     await loadTransactions(selectedDate);
+    await loadPendingTransactions();
   };
 
   // Add Rider
@@ -143,6 +165,7 @@ function ProtectedDashboard() {
     try {
       await api.receivePendingPayment(id, payload, user?.email, profile?.fullName);
       await loadTransactions(selectedDate);
+      await loadPendingTransactions();
       showToast('Payment marked as Paid successfully.', 'success');
     } catch (err: any) {
       console.error('Failed to receive pending payment:', err);
@@ -151,18 +174,11 @@ function ProtectedDashboard() {
     }
   };
 
-  // Transactions filtered for current selected date (or all if 'all')
-  const selectedDateTransactions = selectedDate === 'all'
-    ? transactions
-    : transactions.filter((t) => t.date === selectedDate);
-
   // Calculate Dashboard Stats for selected date
-  const stats: DashboardStats = calculateStats(selectedDateTransactions);
+  const stats: DashboardStats = calculateStats(transactions);
 
-  // Count pending items
-  const pendingCount = transactions.filter(
-    (tx) => tx.paymentStatus === 'Pending' && (tx.pendingAmount || 0) > 0
-  ).length;
+  // Count pending items across all dates
+  const pendingCount = allPendingTransactions.length;
 
   return (
     <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased flex flex-col relative">
@@ -331,9 +347,12 @@ function ProtectedDashboard() {
 
         {activeTab === 'pending_cod' && (
           <PendingCodView
-            transactions={transactions}
+            transactions={allPendingTransactions.length > 0 ? allPendingTransactions : transactions}
             onReceivePayment={handleReceivePendingPayment}
-            onRefreshData={() => loadTransactions(selectedDate)}
+            onRefreshData={async () => {
+              await loadTransactions(selectedDate);
+              await loadPendingTransactions();
+            }}
           />
         )}
 

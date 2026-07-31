@@ -15,6 +15,7 @@ import {
   Download,
   AlertCircle,
   X,
+  Search,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -36,17 +37,24 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
   onViewReceipt,
   onDownloadExcel,
 }) => {
-  // Filters (Note: Rider Search filter removed completely as explicitly requested)
-  const [dateFilter, setDateFilter] = useState<string>('all'); // 'all', 'today', 'yesterday'
+  // Filters
+  const [searchTerm, setSearchTerm] = useState<string>('');
   const [paymentModeFilter, setPaymentModeFilter] = useState<string>('All');
   const [receiverFilter, setReceiverFilter] = useState<string>('All');
 
-  // Excel Download Date State (defaults to today's date)
+  // Excel Download Date State (defaults to selectedDate or today)
   const [excelDownloadDate, setExcelDownloadDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
+    selectedDate || new Date().toISOString().split('T')[0]
   );
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+
+  // Synchronize excel download date with selectedDate
+  React.useEffect(() => {
+    if (selectedDate) {
+      setExcelDownloadDate(selectedDate);
+    }
+  }, [selectedDate]);
 
   // Handle Date-Based Excel Download
   const handleDownloadExcel = async () => {
@@ -54,7 +62,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
     setIsDownloading(true);
 
     try {
-      const targetDate = excelDownloadDate || new Date().toISOString().split('T')[0];
+      const targetDate = excelDownloadDate || selectedDate || new Date().toISOString().split('T')[0];
       const res = await fetch(`/api/reports/download-excel?date=${encodeURIComponent(targetDate)}`);
 
       if (!res.ok) {
@@ -87,6 +95,16 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
 
   // Apply filters
   const filteredTransactions = transactions.filter((tx) => {
+    // Search Term Filter (Rider Name, Remarks, Time)
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase().trim();
+      const matchesRider = tx.riderName?.toLowerCase().includes(term);
+      const matchesRemarks = tx.remarks?.toLowerCase().includes(term);
+      const matchesTime = tx.time?.toLowerCase().includes(term);
+      if (!matchesRider && !matchesRemarks && !matchesTime) {
+        return false;
+      }
+    }
     // Payment Mode Filter
     if (paymentModeFilter !== 'All' && tx.paymentMode !== paymentModeFilter) {
       return false;
@@ -111,7 +129,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
     doc.text('COD Management System - Saved Transactions Ledger', 14, 15);
     doc.setFontSize(10);
     doc.text(`Generated Date: ${new Date().toLocaleString('en-IN')}`, 14, 22);
-    doc.text(`Total Records: ${filteredTransactions.length} | Total COD: Rs. ${totalFilteredCod.toLocaleString('en-IN')}`, 14, 27);
+    doc.text(`Active Date: ${selectedDate} | Total Records: ${filteredTransactions.length} | Total COD: Rs. ${totalFilteredCod.toLocaleString('en-IN')}`, 14, 27);
 
     const tableRows = filteredTransactions.map((t) => [
       formatDisplayDate(t.date),
@@ -145,7 +163,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
             <FileSpreadsheet className="w-5 h-5 text-blue-600" /> Saved Transactions Ledger
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Recorded in daily Excel file: <code className="bg-slate-200 px-1.5 py-0.5 rounded text-slate-800">COD_{selectedDate}.xlsx</code>
+            Recorded in daily Excel file for <span className="font-bold text-slate-800">{selectedDate}</span>: <code className="bg-slate-200 px-1.5 py-0.5 rounded text-slate-800">COD_{selectedDate}.xlsx</code>
           </p>
         </div>
 
@@ -211,10 +229,22 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
         </div>
       )}
 
-      {/* Filter Controls (Rider Name Search filter removed completely as explicitly requested) */}
+      {/* Filter Controls */}
       <div className="p-4 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3 text-xs">
-        <div className="flex items-center gap-1.5 font-bold text-slate-700 mr-2">
+        <div className="flex items-center gap-1.5 font-bold text-slate-700 mr-1">
           <Filter className="w-4 h-4 text-blue-600" /> Filter Ledger:
+        </div>
+
+        {/* Search Input */}
+        <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
+          <Search className="w-3.5 h-3.5 text-slate-500" />
+          <input
+            type="text"
+            placeholder="Search rider / remarks..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="bg-transparent font-medium text-slate-900 focus:outline-hidden text-xs w-36 sm:w-48 placeholder:text-slate-400"
+          />
         </div>
 
         {/* Payment Mode Filter */}
@@ -248,9 +278,10 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
           </select>
         </div>
 
-        {(paymentModeFilter !== 'All' || receiverFilter !== 'All') && (
+        {(searchTerm !== '' || paymentModeFilter !== 'All' || receiverFilter !== 'All') && (
           <button
             onClick={() => {
+              setSearchTerm('');
               setPaymentModeFilter('All');
               setReceiverFilter('All');
             }}
@@ -360,12 +391,12 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
               ))
             ) : (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-500">
+                <td colSpan={11} className="py-12 text-center text-slate-500">
                   <div className="flex flex-col items-center justify-center">
                     <FileSpreadsheet className="w-10 h-10 text-slate-300 mb-2" />
-                    <p className="text-sm font-semibold text-slate-700">No transactions recorded for this filter</p>
+                    <p className="text-sm font-semibold text-slate-700">No transactions recorded for date {selectedDate}</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      Use the COD Entry form above to record today's rider collections.
+                      Use the COD Entry form above to record rider collections for this date or select another date from the header.
                     </p>
                   </div>
                 </td>
@@ -385,7 +416,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                 </td>
                 <td className="py-3 px-4 text-right text-emerald-700">{formatCurrency(totalFilteredCash)}</td>
                 <td className="py-3 px-4 text-right text-indigo-700">{formatCurrency(totalFilteredOnline)}</td>
-                <td colSpan={4}></td>
+                <td colSpan={5}></td>
               </tr>
             </tfoot>
           )}
