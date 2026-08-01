@@ -108,7 +108,9 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
   const numCash = Number(cashAmount) || 0;
   const numOnline = Number(onlineAmount) || 0;
   const currentSum = numCash + numOnline;
-  const isSplitValid = paymentMode !== 'Cash + Online' || Math.abs(currentSum - numCod) < 0.01;
+  const numPending = paymentStatus === 'Pending' ? Number(pendingAmount) || 0 : 0;
+  const expectedReceivedSum = paymentStatus === 'Pending' ? Math.max(0, numCod - numPending) : numCod;
+  const isSplitValid = paymentMode !== 'Cash + Online' || Math.abs(currentSum - expectedReceivedSum) < 0.01;
 
   const handleSelectRider = (name: string) => {
     setRiderName(name);
@@ -161,23 +163,21 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
       return;
     }
 
-    const numPending = paymentStatus === 'Pending' ? Number(pendingAmount) || 0 : 0;
-
     if (paymentStatus === 'Pending') {
       if (numPending <= 0) {
         setErrorMsg('When Payment Status is Pending, Pending Amount must be greater than zero.');
         return;
       }
-      if (numPending >= numCod) {
-        setErrorMsg(`Pending Amount (₹${numPending}) must be less than Total COD Amount (₹${numCod}).`);
+      if (numPending > numCod) {
+        setErrorMsg(`Pending Amount (₹${numPending}) cannot be greater than Total COD Amount (₹${numCod}).`);
         return;
       }
     }
 
     if (paymentMode === 'Cash + Online') {
-      if (!isSplitValid && paymentStatus === 'Paid') {
+      if (!isSplitValid) {
         setErrorMsg(
-          `Cash (₹${numCash}) + Online (₹${numOnline}) = ₹${currentSum}. It must equal COD Amount (₹${numCod}).`
+          `Cash (₹${numCash}) + Online (₹${numOnline}) = ₹${currentSum}. It must equal Received Amount (₹${expectedReceivedSum}).`
         );
         return;
       }
@@ -194,12 +194,43 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
 
     setIsSubmitting(true);
 
+    let finalCash = 0;
+    let finalOnline = 0;
+
+    if (paymentStatus === 'Pending') {
+      const receivedTotal = Math.max(0, numCod - numPending);
+      if (numPending === numCod) {
+        finalCash = 0;
+        finalOnline = 0;
+      } else if (paymentMode === 'Cash') {
+        finalCash = receivedTotal;
+        finalOnline = 0;
+      } else if (paymentMode === 'Online') {
+        finalCash = 0;
+        finalOnline = receivedTotal;
+      } else if (paymentMode === 'Cash + Online') {
+        finalCash = numCash;
+        finalOnline = numOnline;
+      }
+    } else {
+      if (paymentMode === 'Cash') {
+        finalCash = numCod;
+        finalOnline = 0;
+      } else if (paymentMode === 'Online') {
+        finalCash = 0;
+        finalOnline = numCod;
+      } else if (paymentMode === 'Cash + Online') {
+        finalCash = numCash;
+        finalOnline = numOnline;
+      }
+    }
+
     try {
       await onSubmit({
         riderName: riderName.trim(),
         codAmount: numCod,
-        cashAmount: paymentMode === 'Online' ? 0 : numCash,
-        onlineAmount: paymentMode === 'Cash' ? 0 : numOnline,
+        cashAmount: finalCash,
+        onlineAmount: finalOnline,
         onlineReceivedBy: paymentMode === 'Cash' ? '' : onlineReceivedBy,
         paymentMode,
         paymentStatus,
@@ -414,7 +445,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                   const cod = Number(codAmount) || 0;
                   const rcvd = (Number(cashAmount) || 0) + (Number(onlineAmount) || 0);
                   const rem = Math.max(0, cod - rcvd);
-                  setPendingAmount(rem > 0 ? rem.toString() : '500');
+                  setPendingAmount(rem > 0 ? rem.toString() : (cod > 0 ? cod.toString() : '500'));
                 }}
                 className={`py-1.5 px-2 rounded-md text-xs font-bold transition-all text-center flex items-center justify-center gap-1 ${
                   paymentStatus === 'Pending'
@@ -441,7 +472,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                 </span>
               </div>
               <p className="text-xs text-amber-700">
-                Example: Total COD = ₹{numCod || 1500} | Received Today = ₹{(numCod - (Number(pendingAmount) || 0)) > 0 ? (numCod - (Number(pendingAmount) || 0)) : 1000} | Pending = ₹{pendingAmount || 500}
+                Total COD = ₹{numCod} | Received Today = ₹{Math.max(0, numCod - (Number(pendingAmount) || 0))} | Pending = ₹{Number(pendingAmount) || 0}
               </p>
             </div>
 
@@ -453,6 +484,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                 <input
                   type="number"
                   min="1"
+                  max={numCod > 0 ? numCod : undefined}
                   step="any"
                   placeholder="e.g. 500"
                   value={pendingAmount}
@@ -474,12 +506,20 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
               </div>
               <div>
                 <p className="text-xs font-bold text-emerald-900">Cash Payment Mode Selected</p>
-                <p className="text-xs text-emerald-700">Full amount collected in Cash to vault</p>
+                <p className="text-xs text-emerald-700">
+                  {paymentStatus === 'Pending'
+                    ? `Cash collected today: ₹${Math.max(0, numCod - numPending).toLocaleString('en-IN')}`
+                    : 'Full amount collected in Cash to vault'}
+                </p>
               </div>
             </div>
             <div className="text-right">
-              <span className="text-xs text-slate-500 block">Cash Amount</span>
-              <span className="text-lg font-extrabold text-slate-900">₹{numCod.toLocaleString('en-IN')}</span>
+              <span className="text-xs text-slate-500 block">
+                {paymentStatus === 'Pending' ? 'Cash Collected' : 'Cash Amount'}
+              </span>
+              <span className="text-lg font-extrabold text-slate-900">
+                ₹{(paymentStatus === 'Pending' ? Math.max(0, numCod - numPending) : numCod).toLocaleString('en-IN')}
+              </span>
             </div>
           </div>
         )}
@@ -492,7 +532,10 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
               </div>
               <div>
                 <p className="text-xs font-bold text-indigo-900">Online Payment Mode Selected</p>
-                <p className="text-xs text-indigo-700">Online Amount: ₹{numCod.toLocaleString('en-IN')}</p>
+                <p className="text-xs text-indigo-700">
+                  Online Amount: ₹
+                  {(paymentStatus === 'Pending' ? Math.max(0, numCod - numPending) : numCod).toLocaleString('en-IN')}
+                </p>
               </div>
             </div>
 
