@@ -26,16 +26,7 @@ export function subscribeToRealtimeChanges(onUpdate: () => void) {
   };
 }
 
-// Auto-purge any stale browser cached riders on first load after directory reset
-if (typeof window !== 'undefined') {
-  try {
-    const RESET_KEY = 'cod_app_riders_reset_v5';
-    if (!localStorage.getItem(RESET_KEY)) {
-      localStorage.removeItem(KEYS.RIDERS);
-      localStorage.setItem(RESET_KEY, 'true');
-    }
-  } catch {}
-}
+// Keep local storage riders intact without purges
 
 function getLocalRiders(): Rider[] {
   try {
@@ -212,16 +203,10 @@ export const api = {
       try {
         const authUser = (await supabase.auth.getUser())?.data?.user;
         if (authUser?.id) {
-          // Safe migration of existing unassigned records to current authenticated user
-          await supabase
-            .from('transactions')
-            .update({ user_id: authUser.id, created_by: authUser.id })
-            .or('user_id.is.null,created_by.is.null');
-
           let query = supabase
             .from('transactions')
             .select('*')
-            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`);
+            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`);
 
           if (params?.date && params.date !== 'all') {
             query = query.eq('date', params.date);
@@ -241,6 +226,17 @@ export const api = {
           const { data, error } = await query.order('date', { ascending: false }).order('time', { ascending: false });
 
           if (!error && data) {
+            // Automatically claim any unassigned transactions for current authenticated user
+            const unassignedTxIds = data.filter((item) => !item.user_id || !item.created_by).map((item) => item.id);
+            if (unassignedTxIds.length > 0) {
+              console.log(`[DATA RECOVERY] Migrating ${unassignedTxIds.length} unassigned transactions to user ${authUser.id}`);
+              supabase
+                .from('transactions')
+                .update({ user_id: authUser.id, created_by: authUser.id })
+                .in('id', unassignedTxIds)
+                .then();
+            }
+
             const mapped: Transaction[] = data.map((item) => ({
               id: item.id,
               date: item.date,
@@ -451,7 +447,7 @@ export const api = {
         .eq('id', id);
 
       if (authUserId) {
-        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
       }
 
       const { data: updatedRows, error } = await updateQuery.select();
@@ -551,7 +547,7 @@ export const api = {
         .eq('id', id);
 
       if (authUserId) {
-        fetchQuery = fetchQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+        fetchQuery = fetchQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
       }
 
       const { data: existingTx, error: fetchError } = await fetchQuery.single();
@@ -666,7 +662,7 @@ export const api = {
         .eq('id', id);
 
       if (authUserId) {
-        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
       }
 
       const { data: updatedRows, error: updateError } = await updateQuery.select();
@@ -761,7 +757,7 @@ export const api = {
         const authUser = (await supabase.auth.getUser())?.data?.user;
         let delQuery = supabase.from('transactions').delete().eq('id', id);
         if (authUser?.id) {
-          delQuery = delQuery.or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`);
+          delQuery = delQuery.or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`);
         }
         const { error } = await delQuery;
         if (!error) {
@@ -805,7 +801,7 @@ export const api = {
           const { data, error } = await supabase
             .from('transactions')
             .select('date')
-            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`)
+            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`)
             .order('date', { ascending: false });
 
           if (!error && data) {
@@ -837,16 +833,23 @@ export const api = {
       try {
         const authUser = (await supabase.auth.getUser())?.data?.user;
         if (authUser?.id) {
-          // Safe migration of existing unassigned riders to current authenticated user
-          await supabase.from('riders').update({ user_id: authUser.id }).is('user_id', null);
-
           const { data, error } = await supabase
             .from('riders')
             .select('*')
-            .eq('user_id', authUser.id)
+            .or(`user_id.eq.${authUser.id},user_id.is.null`)
             .order('name', { ascending: true });
 
           if (!error && data) {
+            const unassignedRiderIds = data.filter((item) => !item.user_id).map((item) => item.id);
+            if (unassignedRiderIds.length > 0) {
+              console.log(`[DATA RECOVERY] Migrating ${unassignedRiderIds.length} unassigned riders to user ${authUser.id}`);
+              supabase
+                .from('riders')
+                .update({ user_id: authUser.id })
+                .in('id', unassignedRiderIds)
+                .then();
+            }
+
             const mapped: Rider[] = data
               .map((item) => ({
                 id: item.id,
@@ -896,7 +899,7 @@ export const api = {
         const { data: existing } = await supabase
           .from('riders')
           .select('id, name')
-          .eq('user_id', authUser.id)
+          .or(`user_id.eq.${authUser.id},user_id.is.null`)
           .ilike('name', trimmedName);
 
         if (existing && existing.length > 0) {
@@ -991,14 +994,14 @@ export const api = {
           .from('riders')
           .select('name')
           .eq('id', id)
-          .eq('user_id', authUser.id)
-          .single();
+          .or(`user_id.eq.${authUser.id},user_id.is.null`)
+          .maybeSingle();
 
         const { error } = await supabase
           .from('riders')
           .delete()
           .eq('id', id)
-          .eq('user_id', authUser.id);
+          .or(`user_id.eq.${authUser.id},user_id.is.null`);
 
         if (error) {
           console.error('Supabase deleteRider error:', error);
@@ -1048,7 +1051,7 @@ export const api = {
         const { data: existingSupabase } = await supabase
           .from('riders')
           .select('*')
-          .eq('user_id', authUser.id);
+          .or(`user_id.eq.${authUser.id},user_id.is.null`);
 
         const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
           id: item.id,
@@ -1134,10 +1137,19 @@ export const api = {
           const { data, error } = await supabase
             .from('audit_logs')
             .select('*')
-            .eq('user_id', authUser.id)
+            .or(`user_id.eq.${authUser.id},user_id.is.null`)
             .order('timestamp', { ascending: false });
 
           if (!error && data) {
+            const unassignedLogIds = data.filter((item) => !item.user_id).map((item) => item.id);
+            if (unassignedLogIds.length > 0) {
+              supabase
+                .from('audit_logs')
+                .update({ user_id: authUser.id })
+                .in('id', unassignedLogIds)
+                .then();
+            }
+
             return data.map((item) => ({
               id: item.id,
               timestamp: item.timestamp,
@@ -1167,19 +1179,22 @@ export const api = {
       try {
         const authUser = (await supabase.auth.getUser())?.data?.user;
         if (authUser?.id) {
-          // Safe migration of existing unassigned daily closings
-          await supabase
-            .from('daily_closings')
-            .update({ user_id: authUser.id, closed_by: authUser.id })
-            .or('user_id.is.null,closed_by.is.null');
-
           const { data, error } = await supabase
             .from('daily_closings')
             .select('*')
-            .or(`user_id.eq.${authUser.id},closed_by.eq.${authUser.id}`)
+            .or(`user_id.eq.${authUser.id},closed_by.eq.${authUser.id},user_id.is.null,closed_by.is.null`)
             .order('date', { ascending: false });
 
           if (!error && data) {
+            const unassignedClosingIds = data.filter((item) => !item.user_id || !item.closed_by).map((item) => item.id);
+            if (unassignedClosingIds.length > 0) {
+              supabase
+                .from('daily_closings')
+                .update({ user_id: authUser.id, closed_by: authUser.id })
+                .in('id', unassignedClosingIds)
+                .then();
+            }
+
             return data.map((item) => ({
               date: item.date,
               closedAt: item.closed_at,
