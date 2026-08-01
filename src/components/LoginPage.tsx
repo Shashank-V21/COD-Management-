@@ -31,6 +31,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   // Status states
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Forgot Password state
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -42,12 +43,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   const handleTabSwitch = (tab: 'signin' | 'signup') => {
     setActiveTab(tab);
     setErrorMsg(null);
+    setSuccessMsg(null);
   };
 
   // Sign In submit handler
   const handleSignInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setErrorMsg(null);
+    setSuccessMsg(null);
 
     if (!signInEmail || !signInPassword) {
       setErrorMsg('Please enter both your email address and password.');
@@ -56,14 +60,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
     setSubmitting(true);
     try {
+      console.log('[DEBUG LOGIN PAGE SIGNIN START]', { email: signInEmail });
       const res = await signIn(signInEmail, signInPassword);
+      console.log('[DEBUG LOGIN PAGE SIGNIN RES]', res);
       if (res.error) {
         setErrorMsg(res.error);
       } else {
         onSuccess();
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Invalid email or password. Please try again.');
+      console.error('[DEBUG LOGIN PAGE SIGNIN EXCEPTION]', err);
+      const exactMsg = err?.message || (typeof err === 'string' ? err : 'Invalid email or password. Please try again.');
+      setErrorMsg(exactMsg);
     } finally {
       setSubmitting(false);
     }
@@ -72,7 +80,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   // Sign Up submit handler
   const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setErrorMsg(null);
+    setSuccessMsg(null);
 
     if (!signUpFullName || !signUpEmail || !signUpPassword || !confirmPassword) {
       setErrorMsg('Please complete all required fields.');
@@ -91,14 +101,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
     setSubmitting(true);
     try {
+      console.log('[DEBUG LOGIN PAGE SIGNUP START]', { email: signUpEmail, fullName: signUpFullName });
       const res = await signUp(signUpEmail, signUpPassword, signUpFullName);
+      console.log('[DEBUG LOGIN PAGE SIGNUP RES]', res);
       if (res.error) {
         setErrorMsg(res.error);
+      } else if (res.requireEmailVerification) {
+        setSuccessMsg('Account created successfully. Please verify your email before signing in.');
       } else {
         onSuccess();
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to create account. Please try again.');
+      console.error('[DEBUG LOGIN PAGE SIGNUP EXCEPTION]', err);
+      const exactMsg = err?.message || (typeof err === 'string' ? err : 'Failed to create account. Please try again.');
+      setErrorMsg(exactMsg);
     } finally {
       setSubmitting(false);
     }
@@ -192,6 +208,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
             <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-start space-x-2.5">
               <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
               <span className="leading-relaxed font-medium">{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Success Message Alert */}
+          {successMsg && (
+            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-start space-x-2.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span className="leading-relaxed font-medium">{successMsg}</span>
             </div>
           )}
 
