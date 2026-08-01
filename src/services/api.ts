@@ -210,44 +210,56 @@ export const api = {
   }): Promise<Transaction[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        let query = supabase.from('transactions').select('*');
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          // Safe migration of existing unassigned records to current authenticated user
+          await supabase
+            .from('transactions')
+            .update({ user_id: authUser.id, created_by: authUser.id })
+            .or('user_id.is.null,created_by.is.null');
 
-        if (params?.date && params.date !== 'all') {
-          query = query.eq('date', params.date);
-        } else if (params?.startDate && params?.endDate) {
-          query = query.gte('date', params.startDate).lte('date', params.endDate);
-        }
-        if (params?.paymentMode && params.paymentMode !== 'All') {
-          query = query.eq('payment_mode', params.paymentMode);
-        }
-        if (params?.onlineReceiver && params.onlineReceiver !== 'All') {
-          query = query.eq('online_received_by', params.onlineReceiver);
-        }
-        if (params?.paymentStatus && params.paymentStatus !== 'All') {
-          query = query.eq('payment_status', params.paymentStatus);
-        }
+          let query = supabase
+            .from('transactions')
+            .select('*')
+            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`);
 
-        const { data, error } = await query.order('date', { ascending: false }).order('time', { ascending: false });
+          if (params?.date && params.date !== 'all') {
+            query = query.eq('date', params.date);
+          } else if (params?.startDate && params?.endDate) {
+            query = query.gte('date', params.startDate).lte('date', params.endDate);
+          }
+          if (params?.paymentMode && params.paymentMode !== 'All') {
+            query = query.eq('payment_mode', params.paymentMode);
+          }
+          if (params?.onlineReceiver && params.onlineReceiver !== 'All') {
+            query = query.eq('online_received_by', params.onlineReceiver);
+          }
+          if (params?.paymentStatus && params.paymentStatus !== 'All') {
+            query = query.eq('payment_status', params.paymentStatus);
+          }
 
-        if (!error && data) {
-          const mapped: Transaction[] = data.map((item) => ({
-            id: item.id,
-            date: item.date,
-            time: item.time,
-            riderName: item.rider_name,
-            codAmount: Number(item.cod_amount) || 0,
-            cashAmount: Number(item.cash_amount) || 0,
-            onlineAmount: Number(item.online_amount) || 0,
-            onlineReceivedBy: (item.online_received_by as OnlineReceiver | '') || '',
-            paymentMode: item.payment_mode as PaymentMode,
-            remarks: item.remarks || '',
-            createdAt: item.created_at,
-            paymentStatus: item.payment_status as any,
-            pendingAmount: Number(item.pending_amount) || 0,
-            paymentHistory: Array.isArray(item.payment_history) ? item.payment_history : [],
-          }));
-          saveLocalTransactions(mapped);
-          return mapped;
+          const { data, error } = await query.order('date', { ascending: false }).order('time', { ascending: false });
+
+          if (!error && data) {
+            const mapped: Transaction[] = data.map((item) => ({
+              id: item.id,
+              date: item.date,
+              time: item.time,
+              riderName: item.rider_name,
+              codAmount: Number(item.cod_amount) || 0,
+              cashAmount: Number(item.cash_amount) || 0,
+              onlineAmount: Number(item.online_amount) || 0,
+              onlineReceivedBy: (item.online_received_by as OnlineReceiver | '') || '',
+              paymentMode: item.payment_mode as PaymentMode,
+              remarks: item.remarks || '',
+              createdAt: item.created_at,
+              paymentStatus: item.payment_status as any,
+              pendingAmount: Number(item.pending_amount) || 0,
+              paymentHistory: Array.isArray(item.payment_history) ? item.payment_history : [],
+            }));
+            saveLocalTransactions(mapped);
+            return mapped;
+          }
         }
       } catch (e) {
         console.warn('Supabase getTransactions failed:', e);
@@ -351,6 +363,7 @@ export const api = {
           pending_amount: newTx.pendingAmount,
           payment_history: newTx.paymentHistory,
           created_by: authUser?.id || null,
+          user_id: authUser?.id || null,
         });
 
         if (!error) {
@@ -401,7 +414,6 @@ export const api = {
     return created;
   },
 
-
   async updateTransaction(id: string, payload: Partial<Transaction>, userEmail?: string): Promise<void> {
     const isConfig = isSupabaseConfigured();
     console.log('[SUPABASE updateTransaction STATUS]', { isConfigured: isConfig, hasSupabaseClient: Boolean(supabase), transactionId: id });
@@ -433,11 +445,16 @@ export const api = {
         updateData,
       });
 
-      const { data: updatedRows, error } = await supabase
+      let updateQuery = supabase
         .from('transactions')
         .update(updateData)
-        .eq('id', id)
-        .select();
+        .eq('id', id);
+
+      if (authUserId) {
+        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+      }
+
+      const { data: updatedRows, error } = await updateQuery.select();
 
       console.log('[SUPABASE UPDATE AFTER]', {
         transactionId: id,
@@ -528,11 +545,16 @@ export const api = {
       });
 
       // 2. Fetch transaction directly from Supabase
-      const { data: existingTx, error: fetchError } = await supabase
+      let fetchQuery = supabase
         .from('transactions')
         .select('*')
-        .eq('id', id)
-        .single();
+        .eq('id', id);
+
+      if (authUserId) {
+        fetchQuery = fetchQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+      }
+
+      const { data: existingTx, error: fetchError } = await fetchQuery.single();
 
       console.log('[SUPABASE FETCH AFTER]', {
         transactionId: id,
@@ -638,11 +660,16 @@ export const api = {
       });
 
       // Execute update in Supabase and select updated rows
-      const { data: updatedRows, error: updateError } = await supabase
+      let updateQuery = supabase
         .from('transactions')
         .update(updatePayload)
-        .eq('id', id)
-        .select();
+        .eq('id', id);
+
+      if (authUserId) {
+        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId}`);
+      }
+
+      const { data: updatedRows, error: updateError } = await updateQuery.select();
 
       // 1 & 2: Console log after Supabase update
       console.log('[SUPABASE UPDATE AFTER]', {
@@ -729,6 +756,30 @@ export const api = {
   },
 
   async deleteTransaction(id: string, userEmail?: string): Promise<void> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        let delQuery = supabase.from('transactions').delete().eq('id', id);
+        if (authUser?.id) {
+          delQuery = delQuery.or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`);
+        }
+        const { error } = await delQuery;
+        if (!error) {
+          try {
+            await supabase.from('audit_logs').insert({
+              action: 'DELETE',
+              details: `Deleted transaction ${id}`,
+              user_email: userEmail || authUser?.email || 'Authenticated User',
+              user_id: authUser?.id || null,
+            });
+          } catch (e) {}
+          return;
+        }
+      } catch (err) {
+        console.warn('Supabase deleteTransaction failed:', err);
+      }
+    }
+
     const fallback = () => {
       const existing = getLocalTransactions();
       const filtered = existing.filter((t) => t.id !== id);
@@ -747,6 +798,26 @@ export const api = {
   },
 
   async getAvailableDates(): Promise<string[]> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          const { data, error } = await supabase
+            .from('transactions')
+            .select('date')
+            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id}`)
+            .order('date', { ascending: false });
+
+          if (!error && data) {
+            const dates = Array.from(new Set(data.map((item) => item.date))).sort().reverse();
+            if (dates.length > 0) return dates;
+          }
+        }
+      } catch (e) {
+        console.warn('Supabase getAvailableDates error:', e);
+      }
+    }
+
     const fallback = () => {
       const txs = getLocalTransactions();
       const dates = Array.from(new Set(txs.map((t) => t.date))).sort().reverse();
@@ -764,26 +835,34 @@ export const api = {
   async getRiders(): Promise<Rider[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase
-          .from('riders')
-          .select('*')
-          .order('name', { ascending: true });
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          // Safe migration of existing unassigned riders to current authenticated user
+          await supabase.from('riders').update({ user_id: authUser.id }).is('user_id', null);
 
-        if (!error && data) {
-          const mapped: Rider[] = data
-            .map((item) => ({
-              id: item.id,
-              name: item.name,
-              phone: item.phone || '',
-              vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
-              status: (item.status as 'Active' | 'Inactive') || 'Active',
-              totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
-            }))
-            .filter((r) => r && isValidRiderName(r.name));
+          const { data, error } = await supabase
+            .from('riders')
+            .select('*')
+            .eq('user_id', authUser.id)
+            .order('name', { ascending: true });
 
-          return mapped;
-        } else if (error) {
-          console.warn('Supabase getRiders error:', error);
+          if (!error && data) {
+            const mapped: Rider[] = data
+              .map((item) => ({
+                id: item.id,
+                name: item.name,
+                phone: item.phone || '',
+                vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
+                status: (item.status as 'Active' | 'Inactive') || 'Active',
+                totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
+              }))
+              .filter((r) => r && isValidRiderName(r.name));
+
+            saveLocalRiders(mapped);
+            return mapped;
+          } else if (error) {
+            console.warn('Supabase getRiders error:', error);
+          }
         }
       } catch (e) {
         console.warn('Supabase getRiders failed:', e);
@@ -811,55 +890,59 @@ export const api = {
     }
 
     if (isSupabaseConfigured() && supabase) {
-      // Check if rider already exists in Supabase
-      const { data: existing } = await supabase
-        .from('riders')
-        .select('id, name')
-        .ilike('name', trimmedName);
-
-      if (existing && existing.length > 0) {
-        throw new Error('Rider with this name already exists');
-      }
-
       const authUser = (await supabase.auth.getUser())?.data?.user;
-      const { data: inserted, error } = await supabase
-        .from('riders')
-        .insert({
-          name: trimmedName,
-          phone: rider.phone?.trim() || '',
-          vehicle_number: rider.vehicleNumber?.trim() || '',
-          status: 'Active',
-          total_deliveries: 0,
-        })
-        .select()
-        .single();
+      if (authUser?.id) {
+        // Check if rider already exists in Supabase FOR THIS USER
+        const { data: existing } = await supabase
+          .from('riders')
+          .select('id, name')
+          .eq('user_id', authUser.id)
+          .ilike('name', trimmedName);
 
-      if (error) {
-        console.error('Supabase addRider error:', error);
-        throw new Error(`Failed to add rider in Supabase: ${error.message}`);
+        if (existing && existing.length > 0) {
+          throw new Error('Rider with this name already exists');
+        }
+
+        const { data: inserted, error } = await supabase
+          .from('riders')
+          .insert({
+            name: trimmedName,
+            phone: rider.phone?.trim() || '',
+            vehicle_number: rider.vehicleNumber?.trim() || '',
+            status: 'Active',
+            total_deliveries: 0,
+            user_id: authUser.id,
+          })
+          .select()
+          .single();
+
+        if (error) {
+          console.error('Supabase addRider error:', error);
+          throw new Error(`Failed to add rider in Supabase: ${error.message}`);
+        }
+
+        const newRider: Rider = {
+          id: inserted.id,
+          name: inserted.name,
+          phone: inserted.phone || '',
+          vehicleNumber: inserted.vehicle_number || '',
+          status: inserted.status || 'Active',
+          totalDeliveries: Number(inserted.total_deliveries) || 0,
+        };
+
+        try {
+          await supabase.from('audit_logs').insert({
+            action: 'CREATE',
+            details: `Added new rider: ${newRider.name}`,
+            user_email: userEmail || authUser.email || null,
+            user_id: authUser.id,
+          });
+        } catch (e) {
+          console.warn('Audit log write failed:', e);
+        }
+
+        return newRider;
       }
-
-      const newRider: Rider = {
-        id: inserted.id,
-        name: inserted.name,
-        phone: inserted.phone || '',
-        vehicleNumber: inserted.vehicle_number || '',
-        status: inserted.status || 'Active',
-        totalDeliveries: Number(inserted.total_deliveries) || 0,
-      };
-
-      try {
-        await supabase.from('audit_logs').insert({
-          action: 'CREATE',
-          details: `Added new rider: ${newRider.name}`,
-          user_email: userEmail || authUser?.email || null,
-          user_id: authUser?.id || null,
-        });
-      } catch (e) {
-        console.warn('Audit log write failed:', e);
-      }
-
-      return newRider;
     }
 
     const fallback = (): { success: boolean; rider: Rider } => {
@@ -902,32 +985,39 @@ export const api = {
 
   async deleteRider(id: string, userEmail?: string): Promise<void> {
     if (isSupabaseConfigured() && supabase) {
-      const { data: targetRider } = await supabase
-        .from('riders')
-        .select('name')
-        .eq('id', id)
-        .single();
-
-      const { error } = await supabase.from('riders').delete().eq('id', id);
-
-      if (error) {
-        console.error('Supabase deleteRider error:', error);
-        throw new Error(`Failed to delete rider in Supabase: ${error.message}`);
-      }
-
       const authUser = (await supabase.auth.getUser())?.data?.user;
-      try {
-        await supabase.from('audit_logs').insert({
-          action: 'DELETE',
-          details: `Deleted rider: ${targetRider?.name || id}`,
-          user_email: userEmail || authUser?.email || null,
-          user_id: authUser?.id || null,
-        });
-      } catch (e) {
-        console.warn('Audit log write failed:', e);
-      }
+      if (authUser?.id) {
+        const { data: targetRider } = await supabase
+          .from('riders')
+          .select('name')
+          .eq('id', id)
+          .eq('user_id', authUser.id)
+          .single();
 
-      return;
+        const { error } = await supabase
+          .from('riders')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', authUser.id);
+
+        if (error) {
+          console.error('Supabase deleteRider error:', error);
+          throw new Error(`Failed to delete rider in Supabase: ${error.message}`);
+        }
+
+        try {
+          await supabase.from('audit_logs').insert({
+            action: 'DELETE',
+            details: `Deleted rider: ${targetRider?.name || id}`,
+            user_email: userEmail || authUser.email || null,
+            user_id: authUser.id,
+          });
+        } catch (e) {
+          console.warn('Audit log write failed:', e);
+        }
+
+        return;
+      }
     }
 
     const fallback = () => {
@@ -952,52 +1042,59 @@ export const api = {
 
   async importRiders(file: File, userEmail?: string): Promise<{ count: number; riders: Rider[] }> {
     if (isSupabaseConfigured() && supabase) {
-      const buffer = await file.arrayBuffer();
-      const { data: existingSupabase } = await supabase.from('riders').select('*');
-      const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
-        id: item.id,
-        name: item.name,
-        phone: item.phone || '',
-        vehicleNumber: item.vehicle_number || '',
-        status: item.status || 'Active',
-        totalDeliveries: Number(item.total_deliveries) || 0,
-      }));
+      const authUser = (await supabase.auth.getUser())?.data?.user;
+      if (authUser?.id) {
+        const buffer = await file.arrayBuffer();
+        const { data: existingSupabase } = await supabase
+          .from('riders')
+          .select('*')
+          .eq('user_id', authUser.id);
 
-      const result = parseRidersFromBuffer(buffer, existingRiders);
-      const newRiders = result.riders.filter(
-        (r) => !existingRiders.some((e) => e.name.toLowerCase().trim() === r.name.toLowerCase().trim())
-      );
-
-      if (newRiders.length > 0) {
-        const insertPayload = newRiders.map((r) => ({
-          name: r.name.trim(),
-          phone: r.phone || '',
-          vehicle_number: r.vehicleNumber || '',
-          status: 'Active',
-          total_deliveries: 0,
+        const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
+          id: item.id,
+          name: item.name,
+          phone: item.phone || '',
+          vehicleNumber: item.vehicle_number || '',
+          status: item.status || 'Active',
+          totalDeliveries: Number(item.total_deliveries) || 0,
         }));
 
-        const { error: insertErr } = await supabase.from('riders').insert(insertPayload);
-        if (insertErr) {
-          console.error('Supabase importRiders error:', insertErr);
-          throw new Error(`Failed to import riders into Supabase: ${insertErr.message}`);
+        const result = parseRidersFromBuffer(buffer, existingRiders);
+        const newRiders = result.riders.filter(
+          (r) => !existingRiders.some((e) => e.name.toLowerCase().trim() === r.name.toLowerCase().trim())
+        );
+
+        if (newRiders.length > 0) {
+          const insertPayload = newRiders.map((r) => ({
+            name: r.name.trim(),
+            phone: r.phone || '',
+            vehicle_number: r.vehicleNumber || '',
+            status: 'Active',
+            total_deliveries: 0,
+            user_id: authUser.id,
+          }));
+
+          const { error: insertErr } = await supabase.from('riders').insert(insertPayload);
+          if (insertErr) {
+            console.error('Supabase importRiders error:', insertErr);
+            throw new Error(`Failed to import riders into Supabase: ${insertErr.message}`);
+          }
         }
-      }
 
-      const authUser = (await supabase.auth.getUser())?.data?.user;
-      try {
-        await supabase.from('audit_logs').insert({
-          action: 'IMPORT_RIDERS',
-          details: `Imported ${newRiders.length} riders from Excel file`,
-          user_email: userEmail || authUser?.email || null,
-          user_id: authUser?.id || null,
-        });
-      } catch (e) {
-        console.warn('Audit log write failed:', e);
-      }
+        try {
+          await supabase.from('audit_logs').insert({
+            action: 'IMPORT_RIDERS',
+            details: `Imported ${newRiders.length} riders from Excel file`,
+            user_email: userEmail || authUser.email || null,
+            user_id: authUser.id,
+          });
+        } catch (e) {
+          console.warn('Audit log write failed:', e);
+        }
 
-      const updatedList = await this.getRiders();
-      return { count: newRiders.length, riders: updatedList };
+        const updatedList = await this.getRiders();
+        return { count: newRiders.length, riders: updatedList };
+      }
     }
 
     const fallback = async () => {
@@ -1028,9 +1125,33 @@ export const api = {
     return { count: data.count, riders: data.riders || getLocalRiders() };
   },
 
-
   // Audit logs
   async getAuditLogs(): Promise<AuditLog[]> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          const { data, error } = await supabase
+            .from('audit_logs')
+            .select('*')
+            .eq('user_id', authUser.id)
+            .order('timestamp', { ascending: false });
+
+          if (!error && data) {
+            return data.map((item) => ({
+              id: item.id,
+              timestamp: item.timestamp,
+              action: item.action as any,
+              details: item.details,
+              user: item.user_email || 'Authenticated User',
+            }));
+          }
+        }
+      } catch (e) {
+        console.warn('Supabase getAuditLogs error:', e);
+      }
+    }
+
     const fallback = () => getLocalAuditLogs();
 
     const data = await safeFetchJson<{ logs: AuditLog[] }>('/api/audit-logs', undefined, async () => ({
@@ -1044,21 +1165,35 @@ export const api = {
   async getDailyClosings(): Promise<DailyClosingReport[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase.from('daily_closings').select('*').order('date', { ascending: false });
-        if (!error && data) {
-          return data.map((item) => ({
-            date: item.date,
-            closedAt: item.closed_at,
-            totalTransactions: item.total_transactions,
-            totalCod: Number(item.total_cod) || 0,
-            totalCash: Number(item.total_cash) || 0,
-            totalOnline: Number(item.total_online) || 0,
-            shashankOnline: Number(item.shashank_online) || 0,
-            akshayOnline: Number(item.akshay_online) || 0,
-            totalRiders: item.total_riders,
-            status: item.status,
-            notes: item.notes || '',
-          }));
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          // Safe migration of existing unassigned daily closings
+          await supabase
+            .from('daily_closings')
+            .update({ user_id: authUser.id, closed_by: authUser.id })
+            .or('user_id.is.null,closed_by.is.null');
+
+          const { data, error } = await supabase
+            .from('daily_closings')
+            .select('*')
+            .or(`user_id.eq.${authUser.id},closed_by.eq.${authUser.id}`)
+            .order('date', { ascending: false });
+
+          if (!error && data) {
+            return data.map((item) => ({
+              date: item.date,
+              closedAt: item.closed_at,
+              totalTransactions: item.total_transactions,
+              totalCod: Number(item.total_cod) || 0,
+              totalCash: Number(item.total_cash) || 0,
+              totalOnline: Number(item.total_online) || 0,
+              shashankOnline: Number(item.shashank_online) || 0,
+              akshayOnline: Number(item.akshay_online) || 0,
+              totalRiders: item.total_riders,
+              status: item.status,
+              notes: item.notes || '',
+            }));
+          }
         }
       } catch (e) {
         console.warn('Supabase getDailyClosings failed:', e);
@@ -1075,6 +1210,7 @@ export const api = {
   async saveDailyClosing(closing: DailyClosingReport, userEmail?: string): Promise<void> {
     if (isSupabaseConfigured() && supabase) {
       try {
+        const authUser = (await supabase.auth.getUser())?.data?.user;
         await supabase.from('daily_closings').upsert({
           date: closing.date,
           closed_at: closing.closedAt,
@@ -1087,6 +1223,8 @@ export const api = {
           total_riders: closing.totalRiders,
           status: closing.status,
           notes: closing.notes || '',
+          closed_by: authUser?.id || null,
+          user_id: authUser?.id || null,
         });
       } catch (err) {
         console.warn('Supabase daily closing save failed:', err);

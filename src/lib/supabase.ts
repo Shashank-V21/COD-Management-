@@ -73,11 +73,14 @@ CREATE TABLE IF NOT EXISTS public.riders (
   vehicle_number TEXT DEFAULT '',
   status TEXT DEFAULT 'Active' CHECK (status IN ('Active', 'Inactive')),
   total_deliveries INT DEFAULT 0,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. TRANSACTIONS TABLE (UUID Primary Key & UUID created_by)
+ALTER TABLE public.riders ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+
+-- 3. TRANSACTIONS TABLE (UUID Primary Key & UUID created_by / user_id)
 CREATE TABLE IF NOT EXISTS public.transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   date DATE NOT NULL,
@@ -93,14 +96,18 @@ CREATE TABLE IF NOT EXISTS public.transactions (
   pending_amount NUMERIC DEFAULT 0,
   payment_history JSONB DEFAULT '[]'::jsonb,
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid(),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. DAILY CLOSINGS TABLE (UUID Primary Key & UUID closed_by)
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid();
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid();
+
+-- 4. DAILY CLOSINGS TABLE (UUID Primary Key & UUID closed_by / user_id)
 CREATE TABLE IF NOT EXISTS public.daily_closings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  date DATE NOT NULL UNIQUE,
+  date DATE NOT NULL,
   closed_at TIMESTAMPTZ DEFAULT NOW(),
   total_transactions INT DEFAULT 0,
   total_cod NUMERIC DEFAULT 0,
@@ -112,8 +119,12 @@ CREATE TABLE IF NOT EXISTS public.daily_closings (
   status TEXT DEFAULT 'Balanced',
   notes TEXT DEFAULT '',
   closed_by UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.daily_closings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid();
+ALTER TABLE public.daily_closings ADD COLUMN IF NOT EXISTS closed_by UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid();
 
 -- 5. AUDIT LOGS TABLE (UUID Primary Key & UUID user_id)
 CREATE TABLE IF NOT EXISTS public.audit_logs (
@@ -125,13 +136,18 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid()
 );
 
+ALTER TABLE public.audit_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL DEFAULT auth.uid();
+
 -- PERFORMANCE INDEXES
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_rider_name ON public.transactions(rider_name);
 CREATE INDEX IF NOT EXISTS idx_transactions_payment_status ON public.transactions(payment_status);
 CREATE INDEX IF NOT EXISTS idx_transactions_created_by ON public.transactions(created_by);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON public.transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_riders_name ON public.riders(name);
+CREATE INDEX IF NOT EXISTS idx_riders_user_id ON public.riders(user_id);
 CREATE INDEX IF NOT EXISTS idx_daily_closings_date ON public.daily_closings(date);
+CREATE INDEX IF NOT EXISTS idx_daily_closings_user_id ON public.daily_closings(user_id);
 
 -- TRIGGERS FOR UPDATED_AT COLUMNS
 DROP TRIGGER IF EXISTS update_profiles_updated_at ON public.profiles;
@@ -170,8 +186,12 @@ DROP POLICY IF EXISTS "Authenticated users manage riders" ON public.riders;
 DROP POLICY IF EXISTS "Authenticated users manage transactions" ON public.transactions;
 DROP POLICY IF EXISTS "Authenticated users manage daily_closings" ON public.daily_closings;
 DROP POLICY IF EXISTS "Authenticated users manage audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Users access own riders" ON public.riders;
+DROP POLICY IF EXISTS "Users access own transactions" ON public.transactions;
+DROP POLICY IF EXISTS "Users access own daily_closings" ON public.daily_closings;
+DROP POLICY IF EXISTS "Users access own audit_logs" ON public.audit_logs;
 
--- STRICT AUTHENTICATED-ONLY RLS POLICIES (NO ANON ACCESS ALLOWED)
+-- STRICT ACCOUNT ISOLATION RLS POLICIES (NO CROSS-USER DATA LEAKS)
 CREATE POLICY "Authenticated users view profiles" ON public.profiles
   FOR SELECT TO authenticated USING (true);
 
@@ -181,17 +201,25 @@ CREATE POLICY "Authenticated users update own profile" ON public.profiles
 CREATE POLICY "Authenticated users insert profile" ON public.profiles
   FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);
 
-CREATE POLICY "Authenticated users manage riders" ON public.riders
-  FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Users access own riders" ON public.riders
+  FOR ALL TO authenticated
+  USING (user_id IS NULL OR user_id = auth.uid())
+  WITH CHECK (user_id IS NULL OR user_id = auth.uid());
 
-CREATE POLICY "Authenticated users manage transactions" ON public.transactions
-  FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Users access own transactions" ON public.transactions
+  FOR ALL TO authenticated
+  USING (user_id IS NULL OR created_by IS NULL OR user_id = auth.uid() OR created_by = auth.uid())
+  WITH CHECK (user_id IS NULL OR created_by IS NULL OR user_id = auth.uid() OR created_by = auth.uid());
 
-CREATE POLICY "Authenticated users manage daily_closings" ON public.daily_closings
-  FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Users access own daily_closings" ON public.daily_closings
+  FOR ALL TO authenticated
+  USING (user_id IS NULL OR closed_by IS NULL OR user_id = auth.uid() OR closed_by = auth.uid())
+  WITH CHECK (user_id IS NULL OR closed_by IS NULL OR user_id = auth.uid() OR closed_by = auth.uid());
 
-CREATE POLICY "Authenticated users manage audit_logs" ON public.audit_logs
-  FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Users access own audit_logs" ON public.audit_logs
+  FOR ALL TO authenticated
+  USING (user_id IS NULL OR user_id = auth.uid())
+  WITH CHECK (user_id IS NULL OR user_id = auth.uid());
 
 -- AUTOMATIC USER REGISTRATION TRIGGER
 CREATE OR REPLACE FUNCTION public.handle_new_user()
