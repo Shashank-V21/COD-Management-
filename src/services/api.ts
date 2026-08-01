@@ -206,7 +206,7 @@ export const api = {
           let query = supabase
             .from('transactions')
             .select('*')
-            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`);
+            .or(`created_by.eq.${authUser.id},created_by.is.null`);
 
           if (params?.date && params.date !== 'all') {
             query = query.eq('date', params.date);
@@ -227,12 +227,12 @@ export const api = {
 
           if (!error && data) {
             // Automatically claim any unassigned transactions for current authenticated user
-            const unassignedTxIds = data.filter((item) => !item.user_id || !item.created_by).map((item) => item.id);
+            const unassignedTxIds = data.filter((item) => !item.created_by).map((item) => item.id);
             if (unassignedTxIds.length > 0) {
               console.log(`[DATA RECOVERY] Migrating ${unassignedTxIds.length} unassigned transactions to user ${authUser.id}`);
               supabase
                 .from('transactions')
-                .update({ user_id: authUser.id, created_by: authUser.id })
+                .update({ created_by: authUser.id })
                 .in('id', unassignedTxIds)
                 .then();
             }
@@ -359,7 +359,6 @@ export const api = {
           pending_amount: newTx.pendingAmount,
           payment_history: newTx.paymentHistory,
           created_by: authUser?.id || null,
-          user_id: authUser?.id || null,
         });
 
         if (!error) {
@@ -445,10 +444,6 @@ export const api = {
         .from('transactions')
         .update(updateData)
         .eq('id', id);
-
-      if (authUserId) {
-        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
-      }
 
       const { data: updatedRows, error } = await updateQuery.select();
 
@@ -541,16 +536,11 @@ export const api = {
       });
 
       // 2. Fetch transaction directly from Supabase
-      let fetchQuery = supabase
+      const { data: existingTx, error: fetchError } = await supabase
         .from('transactions')
         .select('*')
-        .eq('id', id);
-
-      if (authUserId) {
-        fetchQuery = fetchQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
-      }
-
-      const { data: existingTx, error: fetchError } = await fetchQuery.single();
+        .eq('id', id)
+        .single();
 
       console.log('[SUPABASE FETCH AFTER]', {
         transactionId: id,
@@ -661,10 +651,6 @@ export const api = {
         .update(updatePayload)
         .eq('id', id);
 
-      if (authUserId) {
-        updateQuery = updateQuery.or(`user_id.eq.${authUserId},created_by.eq.${authUserId},user_id.is.null,created_by.is.null`);
-      }
-
       const { data: updatedRows, error: updateError } = await updateQuery.select();
 
       // 1 & 2: Console log after Supabase update
@@ -756,9 +742,6 @@ export const api = {
       try {
         const authUser = (await supabase.auth.getUser())?.data?.user;
         let delQuery = supabase.from('transactions').delete().eq('id', id);
-        if (authUser?.id) {
-          delQuery = delQuery.or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`);
-        }
         const { error } = await delQuery;
         if (!error) {
           try {
@@ -801,7 +784,7 @@ export const api = {
           const { data, error } = await supabase
             .from('transactions')
             .select('date')
-            .or(`user_id.eq.${authUser.id},created_by.eq.${authUser.id},user_id.is.null,created_by.is.null`)
+            .or(`created_by.eq.${authUser.id},created_by.is.null`)
             .order('date', { ascending: false });
 
           if (!error && data) {
@@ -831,41 +814,27 @@ export const api = {
   async getRiders(): Promise<Rider[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const authUser = (await supabase.auth.getUser())?.data?.user;
-        if (authUser?.id) {
-          const { data, error } = await supabase
-            .from('riders')
-            .select('*')
-            .or(`user_id.eq.${authUser.id},user_id.is.null`)
-            .order('name', { ascending: true });
+        const { data, error } = await supabase
+          .from('riders')
+          .select('*')
+          .order('name', { ascending: true });
 
-          if (!error && data) {
-            const unassignedRiderIds = data.filter((item) => !item.user_id).map((item) => item.id);
-            if (unassignedRiderIds.length > 0) {
-              console.log(`[DATA RECOVERY] Migrating ${unassignedRiderIds.length} unassigned riders to user ${authUser.id}`);
-              supabase
-                .from('riders')
-                .update({ user_id: authUser.id })
-                .in('id', unassignedRiderIds)
-                .then();
-            }
+        if (!error && data) {
+          const mapped: Rider[] = data
+            .map((item) => ({
+              id: item.id,
+              name: item.name,
+              phone: item.phone || '',
+              vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
+              status: (item.status as 'Active' | 'Inactive') || 'Active',
+              totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
+            }))
+            .filter((r) => r && isValidRiderName(r.name));
 
-            const mapped: Rider[] = data
-              .map((item) => ({
-                id: item.id,
-                name: item.name,
-                phone: item.phone || '',
-                vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
-                status: (item.status as 'Active' | 'Inactive') || 'Active',
-                totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
-              }))
-              .filter((r) => r && isValidRiderName(r.name));
-
-            saveLocalRiders(mapped);
-            return mapped;
-          } else if (error) {
-            console.warn('Supabase getRiders error:', error);
-          }
+          saveLocalRiders(mapped);
+          return mapped;
+        } else if (error) {
+          console.warn('Supabase getRiders error:', error);
         }
       } catch (e) {
         console.warn('Supabase getRiders failed:', e);
@@ -895,11 +864,10 @@ export const api = {
     if (isSupabaseConfigured() && supabase) {
       const authUser = (await supabase.auth.getUser())?.data?.user;
       if (authUser?.id) {
-        // Check if rider already exists in Supabase FOR THIS USER
+        // Check if rider already exists in Supabase
         const { data: existing } = await supabase
           .from('riders')
           .select('id, name')
-          .or(`user_id.eq.${authUser.id},user_id.is.null`)
           .ilike('name', trimmedName);
 
         if (existing && existing.length > 0) {
@@ -914,7 +882,6 @@ export const api = {
             vehicle_number: rider.vehicleNumber?.trim() || '',
             status: 'Active',
             total_deliveries: 0,
-            user_id: authUser.id,
           })
           .select()
           .single();
@@ -994,14 +961,12 @@ export const api = {
           .from('riders')
           .select('name')
           .eq('id', id)
-          .or(`user_id.eq.${authUser.id},user_id.is.null`)
           .maybeSingle();
 
         const { error } = await supabase
           .from('riders')
           .delete()
-          .eq('id', id)
-          .or(`user_id.eq.${authUser.id},user_id.is.null`);
+          .eq('id', id);
 
         if (error) {
           console.error('Supabase deleteRider error:', error);
@@ -1050,8 +1015,7 @@ export const api = {
         const buffer = await file.arrayBuffer();
         const { data: existingSupabase } = await supabase
           .from('riders')
-          .select('*')
-          .or(`user_id.eq.${authUser.id},user_id.is.null`);
+          .select('*');
 
         const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
           id: item.id,
@@ -1074,7 +1038,6 @@ export const api = {
             vehicle_number: r.vehicleNumber || '',
             status: 'Active',
             total_deliveries: 0,
-            user_id: authUser.id,
           }));
 
           const { error: insertErr } = await supabase.from('riders').insert(insertPayload);
@@ -1182,15 +1145,15 @@ export const api = {
           const { data, error } = await supabase
             .from('daily_closings')
             .select('*')
-            .or(`user_id.eq.${authUser.id},closed_by.eq.${authUser.id},user_id.is.null,closed_by.is.null`)
+            .or(`closed_by.eq.${authUser.id},closed_by.is.null`)
             .order('date', { ascending: false });
 
           if (!error && data) {
-            const unassignedClosingIds = data.filter((item) => !item.user_id || !item.closed_by).map((item) => item.id);
+            const unassignedClosingIds = data.filter((item) => !item.closed_by).map((item) => item.id);
             if (unassignedClosingIds.length > 0) {
               supabase
                 .from('daily_closings')
-                .update({ user_id: authUser.id, closed_by: authUser.id })
+                .update({ closed_by: authUser.id })
                 .in('id', unassignedClosingIds)
                 .then();
             }
@@ -1239,7 +1202,6 @@ export const api = {
           status: closing.status,
           notes: closing.notes || '',
           closed_by: authUser?.id || null,
-          user_id: authUser?.id || null,
         });
       } catch (err) {
         console.warn('Supabase daily closing save failed:', err);
