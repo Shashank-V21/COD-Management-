@@ -189,6 +189,26 @@ async function safeFetchJson<T>(
   }
 }
 
+// Helpers for encoding owner ID in vehicle_number column
+export function parseVehicleOwner(raw?: string): { vehicleNumber: string; owner: string | null } {
+  if (!raw) return { vehicleNumber: '', owner: null };
+  if (raw.startsWith('[OWNER:')) {
+    const endIdx = raw.indexOf(']');
+    if (endIdx > 7) {
+      const owner = raw.substring(7, endIdx);
+      const vehicleNumber = raw.substring(endIdx + 1).trim();
+      return { vehicleNumber, owner };
+    }
+  }
+  return { vehicleNumber: raw, owner: null };
+}
+
+export function formatVehicleOwner(vehicleNumber?: string, ownerId?: string): string {
+  const v = (vehicleNumber || '').trim();
+  if (!ownerId) return v;
+  return `[OWNER:${ownerId}]${v ? ' ' + v : ''}`;
+}
+
 export const api = {
   // Transactions
   async getTransactions(params?: {
@@ -814,27 +834,55 @@ export const api = {
   async getRiders(): Promise<Rider[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase
-          .from('riders')
-          .select('*')
-          .order('name', { ascending: true });
+        const authUser = (await supabase.auth.getUser())?.data?.user;
+        if (authUser?.id) {
+          const { data, error } = await supabase
+            .from('riders')
+            .select('*')
+            .order('name', { ascending: true });
 
-        if (!error && data) {
-          const mapped: Rider[] = data
-            .map((item) => ({
-              id: item.id,
-              name: item.name,
-              phone: item.phone || '',
-              vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
-              status: (item.status as 'Active' | 'Inactive') || 'Active',
-              totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
-            }))
-            .filter((r) => r && isValidRiderName(r.name));
+          if (!error && data) {
+            // Check if there are unassigned legacy riders in production (created before owner tagging)
+            const unassignedRiders = data.filter((item) => !parseVehicleOwner(item.vehicle_number || item.vehicleNumber).owner);
 
-          saveLocalRiders(mapped);
-          return mapped;
-        } else if (error) {
-          console.warn('Supabase getRiders error:', error);
+            // Migrate unassigned riders to the current authenticated account
+            if (unassignedRiders.length > 0) {
+              console.log(`[RIDER MIGRATION] Migrating ${unassignedRiders.length} unassigned riders to owner ${authUser.id}`);
+              for (const unassignedItem of unassignedRiders) {
+                const parsed = parseVehicleOwner(unassignedItem.vehicle_number || unassignedItem.vehicleNumber);
+                const updatedVehicle = formatVehicleOwner(parsed.vehicleNumber, authUser.id);
+                await supabase
+                  .from('riders')
+                  .update({ vehicle_number: updatedVehicle })
+                  .eq('id', unassignedItem.id);
+                // Update local memory reference for immediate mapping
+                unassignedItem.vehicle_number = updatedVehicle;
+              }
+            }
+
+            const mapped: Rider[] = data
+              .filter((item) => {
+                const { owner } = parseVehicleOwner(item.vehicle_number || item.vehicleNumber);
+                return owner === authUser.id;
+              })
+              .map((item) => {
+                const { vehicleNumber } = parseVehicleOwner(item.vehicle_number || item.vehicleNumber);
+                return {
+                  id: item.id,
+                  name: item.name,
+                  phone: item.phone || '',
+                  vehicleNumber: vehicleNumber,
+                  status: (item.status as 'Active' | 'Inactive') || 'Active',
+                  totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
+                };
+              })
+              .filter((r) => r && isValidRiderName(r.name));
+
+            saveLocalRiders(mapped);
+            return mapped;
+          } else if (error) {
+            console.warn('Supabase getRiders error:', error);
+          }
         }
       } catch (e) {
         console.warn('Supabase getRiders failed:', e);
@@ -864,22 +912,28 @@ export const api = {
     if (isSupabaseConfigured() && supabase) {
       const authUser = (await supabase.auth.getUser())?.data?.user;
       if (authUser?.id) {
-        // Check if rider already exists in Supabase
+        // Fetch existing riders to check for duplicate name within THIS account
         const { data: existing } = await supabase
           .from('riders')
-          .select('id, name')
-          .ilike('name', trimmedName);
+          .select('*');
 
-        if (existing && existing.length > 0) {
+        const userRiders = (existing || []).filter((item) => {
+          const { owner } = parseVehicleOwner(item.vehicle_number || item.vehicleNumber);
+          return owner === authUser.id;
+        });
+
+        if (userRiders.some((item) => item.name.toLowerCase().trim() === trimmedName.toLowerCase())) {
           throw new Error('Rider with this name already exists');
         }
+
+        const formattedVehicle = formatVehicleOwner(rider.vehicleNumber, authUser.id);
 
         const { data: inserted, error } = await supabase
           .from('riders')
           .insert({
             name: trimmedName,
             phone: rider.phone?.trim() || '',
-            vehicle_number: rider.vehicleNumber?.trim() || '',
+            vehicle_number: formattedVehicle,
             status: 'Active',
             total_deliveries: 0,
           })
@@ -891,11 +945,13 @@ export const api = {
           throw new Error(`Failed to add rider in Supabase: ${error.message}`);
         }
 
+        const parsedInserted = parseVehicleOwner(inserted.vehicle_number || '');
+
         const newRider: Rider = {
           id: inserted.id,
           name: inserted.name,
           phone: inserted.phone || '',
-          vehicleNumber: inserted.vehicle_number || '',
+          vehicleNumber: parsedInserted.vehicleNumber,
           status: inserted.status || 'Active',
           totalDeliveries: Number(inserted.total_deliveries) || 0,
         };
@@ -1017,14 +1073,22 @@ export const api = {
           .from('riders')
           .select('*');
 
-        const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
-          id: item.id,
-          name: item.name,
-          phone: item.phone || '',
-          vehicleNumber: item.vehicle_number || '',
-          status: item.status || 'Active',
-          totalDeliveries: Number(item.total_deliveries) || 0,
-        }));
+        const existingRiders: Rider[] = (existingSupabase || [])
+          .filter((item) => {
+            const { owner } = parseVehicleOwner(item.vehicle_number || item.vehicleNumber);
+            return owner === authUser.id;
+          })
+          .map((item) => {
+            const { vehicleNumber } = parseVehicleOwner(item.vehicle_number || item.vehicleNumber);
+            return {
+              id: item.id,
+              name: item.name,
+              phone: item.phone || '',
+              vehicleNumber: vehicleNumber,
+              status: item.status || 'Active',
+              totalDeliveries: Number(item.total_deliveries) || 0,
+            };
+          });
 
         const result = parseRidersFromBuffer(buffer, existingRiders);
         const newRiders = result.riders.filter(
@@ -1035,7 +1099,7 @@ export const api = {
           const insertPayload = newRiders.map((r) => ({
             name: r.name.trim(),
             phone: r.phone || '',
-            vehicle_number: r.vehicleNumber || '',
+            vehicle_number: formatVehicleOwner(r.vehicleNumber, authUser.id),
             status: 'Active',
             total_deliveries: 0,
           }));
