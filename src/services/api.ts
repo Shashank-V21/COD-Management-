@@ -762,6 +762,34 @@ export const api = {
 
   // Riders
   async getRiders(): Promise<Rider[]> {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('riders')
+          .select('*')
+          .order('name', { ascending: true });
+
+        if (!error && data) {
+          const mapped: Rider[] = data
+            .map((item) => ({
+              id: item.id,
+              name: item.name,
+              phone: item.phone || '',
+              vehicleNumber: item.vehicle_number || item.vehicleNumber || '',
+              status: (item.status as 'Active' | 'Inactive') || 'Active',
+              totalDeliveries: Number(item.total_deliveries || item.totalDeliveries) || 0,
+            }))
+            .filter((r) => r && isValidRiderName(r.name));
+
+          return mapped;
+        } else if (error) {
+          console.warn('Supabase getRiders error:', error);
+        }
+      } catch (e) {
+        console.warn('Supabase getRiders failed:', e);
+      }
+    }
+
     const fallback = () => getLocalRiders();
 
     const data = await safeFetchJson<{ riders: Rider[] }>('/api/riders', undefined, async () => ({
@@ -769,8 +797,9 @@ export const api = {
     }));
 
     if (Array.isArray(data.riders)) {
-      saveLocalRiders(data.riders);
-      return data.riders;
+      const cleaned = data.riders.filter((r) => r && isValidRiderName(r.name));
+      saveLocalRiders(cleaned);
+      return cleaned;
     }
     return getLocalRiders();
   },
@@ -779,6 +808,58 @@ export const api = {
     const trimmedName = rider.name.trim();
     if (!trimmedName) {
       throw new Error('Rider name is required');
+    }
+
+    if (isSupabaseConfigured() && supabase) {
+      // Check if rider already exists in Supabase
+      const { data: existing } = await supabase
+        .from('riders')
+        .select('id, name')
+        .ilike('name', trimmedName);
+
+      if (existing && existing.length > 0) {
+        throw new Error('Rider with this name already exists');
+      }
+
+      const authUser = (await supabase.auth.getUser())?.data?.user;
+      const { data: inserted, error } = await supabase
+        .from('riders')
+        .insert({
+          name: trimmedName,
+          phone: rider.phone?.trim() || '',
+          vehicle_number: rider.vehicleNumber?.trim() || '',
+          status: 'Active',
+          total_deliveries: 0,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase addRider error:', error);
+        throw new Error(`Failed to add rider in Supabase: ${error.message}`);
+      }
+
+      const newRider: Rider = {
+        id: inserted.id,
+        name: inserted.name,
+        phone: inserted.phone || '',
+        vehicleNumber: inserted.vehicle_number || '',
+        status: inserted.status || 'Active',
+        totalDeliveries: Number(inserted.total_deliveries) || 0,
+      };
+
+      try {
+        await supabase.from('audit_logs').insert({
+          action: 'CREATE',
+          details: `Added new rider: ${newRider.name}`,
+          user_email: userEmail || authUser?.email || null,
+          user_id: authUser?.id || null,
+        });
+      } catch (e) {
+        console.warn('Audit log write failed:', e);
+      }
+
+      return newRider;
     }
 
     const fallback = (): { success: boolean; rider: Rider } => {
@@ -811,8 +892,6 @@ export const api = {
     );
 
     const createdRider = data.rider;
-
-    // Sync local storage
     const currentLocals = getLocalRiders();
     if (!currentLocals.some((r) => r.id === createdRider.id)) {
       saveLocalRiders([createdRider, ...currentLocals]);
@@ -822,6 +901,35 @@ export const api = {
   },
 
   async deleteRider(id: string, userEmail?: string): Promise<void> {
+    if (isSupabaseConfigured() && supabase) {
+      const { data: targetRider } = await supabase
+        .from('riders')
+        .select('name')
+        .eq('id', id)
+        .single();
+
+      const { error } = await supabase.from('riders').delete().eq('id', id);
+
+      if (error) {
+        console.error('Supabase deleteRider error:', error);
+        throw new Error(`Failed to delete rider in Supabase: ${error.message}`);
+      }
+
+      const authUser = (await supabase.auth.getUser())?.data?.user;
+      try {
+        await supabase.from('audit_logs').insert({
+          action: 'DELETE',
+          details: `Deleted rider: ${targetRider?.name || id}`,
+          user_email: userEmail || authUser?.email || null,
+          user_id: authUser?.id || null,
+        });
+      } catch (e) {
+        console.warn('Audit log write failed:', e);
+      }
+
+      return;
+    }
+
     const fallback = () => {
       const existing = getLocalRiders();
       const target = existing.find((r) => r.id === id);
@@ -843,6 +951,55 @@ export const api = {
   },
 
   async importRiders(file: File, userEmail?: string): Promise<{ count: number; riders: Rider[] }> {
+    if (isSupabaseConfigured() && supabase) {
+      const buffer = await file.arrayBuffer();
+      const { data: existingSupabase } = await supabase.from('riders').select('*');
+      const existingRiders: Rider[] = (existingSupabase || []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        phone: item.phone || '',
+        vehicleNumber: item.vehicle_number || '',
+        status: item.status || 'Active',
+        totalDeliveries: Number(item.total_deliveries) || 0,
+      }));
+
+      const result = parseRidersFromBuffer(buffer, existingRiders);
+      const newRiders = result.riders.filter(
+        (r) => !existingRiders.some((e) => e.name.toLowerCase().trim() === r.name.toLowerCase().trim())
+      );
+
+      if (newRiders.length > 0) {
+        const insertPayload = newRiders.map((r) => ({
+          name: r.name.trim(),
+          phone: r.phone || '',
+          vehicle_number: r.vehicleNumber || '',
+          status: 'Active',
+          total_deliveries: 0,
+        }));
+
+        const { error: insertErr } = await supabase.from('riders').insert(insertPayload);
+        if (insertErr) {
+          console.error('Supabase importRiders error:', insertErr);
+          throw new Error(`Failed to import riders into Supabase: ${insertErr.message}`);
+        }
+      }
+
+      const authUser = (await supabase.auth.getUser())?.data?.user;
+      try {
+        await supabase.from('audit_logs').insert({
+          action: 'IMPORT_RIDERS',
+          details: `Imported ${newRiders.length} riders from Excel file`,
+          user_email: userEmail || authUser?.email || null,
+          user_id: authUser?.id || null,
+        });
+      } catch (e) {
+        console.warn('Audit log write failed:', e);
+      }
+
+      const updatedList = await this.getRiders();
+      return { count: newRiders.length, riders: updatedList };
+    }
+
     const fallback = async () => {
       const buffer = await file.arrayBuffer();
       const existing = getLocalRiders();
