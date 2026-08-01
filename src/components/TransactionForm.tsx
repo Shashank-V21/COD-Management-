@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PaymentMode, PaymentStatus, OnlineReceiver, Rider, Transaction } from '../types';
 import { getCurrentTimeFormatted } from '../lib/utils';
+import { useAuth } from '../context/AuthContext';
 import {
   PlusCircle,
   Search,
@@ -32,6 +33,11 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
   onAddRiderQuick,
   onRemoveRiderQuick,
 }) => {
+  const { storeSettings } = useAuth();
+  const onlineReceivers = Array.isArray(storeSettings?.onlineReceivers) && storeSettings.onlineReceivers.length > 0
+    ? storeSettings.onlineReceivers
+    : ['Shashank', 'Akshay'];
+
   // Form State
   const [riderName, setRiderName] = useState('');
   const [isRiderDropdownOpen, setIsRiderDropdownOpen] = useState(false);
@@ -41,7 +47,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
   const [pendingAmount, setPendingAmount] = useState<string>('0');
   const [cashAmount, setCashAmount] = useState<string>('');
   const [onlineAmount, setOnlineAmount] = useState<string>('');
-  const [onlineReceivedBy, setOnlineReceivedBy] = useState<OnlineReceiver | ''>('Shashank');
+  const [onlineReceivedBy, setOnlineReceivedBy] = useState<OnlineReceiver | ''>(onlineReceivers[0] || 'Shashank');
   const [date, setDate] = useState<string>(selectedDate);
   const [time, setTime] = useState<string>(getCurrentTimeFormatted());
   const [remarks, setRemarks] = useState<string>('');
@@ -548,8 +554,11 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                 onChange={(e) => setOnlineReceivedBy(e.target.value as OnlineReceiver)}
                 className="w-full py-2 px-3 bg-white border border-indigo-300 rounded-lg text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
               >
-                <option value="Shashank">Shashank</option>
-                <option value="Akshay">Akshay</option>
+                {onlineReceivers.map((rec) => (
+                  <option key={rec} value={rec}>
+                    {rec}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -632,8 +641,11 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                   onChange={(e) => setOnlineReceivedBy(e.target.value as OnlineReceiver)}
                   className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
                 >
-                  <option value="Shashank">Shashank</option>
-                  <option value="Akshay">Akshay</option>
+                  {onlineReceivers.map((rec) => (
+                    <option key={rec} value={rec}>
+                      {rec}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>

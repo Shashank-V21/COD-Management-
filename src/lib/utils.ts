@@ -52,6 +52,7 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
   let onlineCollection = 0;
   let onlineByShashank = 0;
   let onlineByAkshay = 0;
+  const onlineByReceiver: Record<string, number> = {};
   let totalPendingAmount = 0;
   const ridersSet = new Set<string>();
   const pendingRidersSet = new Set<string>();
@@ -59,12 +60,20 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
   transactions.forEach((tx) => {
     totalCodCollected += Number(tx.codAmount) || 0;
     cashCollection += Number(tx.cashAmount) || 0;
-    onlineCollection += Number(tx.onlineAmount) || 0;
+    const onlineAmt = Number(tx.onlineAmount) || 0;
+    onlineCollection += onlineAmt;
+
+    if (tx.onlineReceivedBy) {
+      const rec = tx.onlineReceivedBy.trim();
+      if (rec) {
+        onlineByReceiver[rec] = (onlineByReceiver[rec] || 0) + onlineAmt;
+      }
+    }
 
     if (tx.onlineReceivedBy === 'Shashank') {
-      onlineByShashank += Number(tx.onlineAmount) || 0;
+      onlineByShashank += onlineAmt;
     } else if (tx.onlineReceivedBy === 'Akshay') {
-      onlineByAkshay += Number(tx.onlineAmount) || 0;
+      onlineByAkshay += onlineAmt;
     }
 
     if (tx.riderName) {
@@ -86,6 +95,7 @@ export const calculateStats = (transactions: Transaction[]): DashboardStats => {
     onlineCollection,
     onlineByShashank,
     onlineByAkshay,
+    onlineByReceiver,
     totalRidersPaid: ridersSet.size,
     pendingRidersCount: pendingRidersSet.size,
     totalPendingAmount,

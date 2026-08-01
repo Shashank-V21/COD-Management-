@@ -1,11 +1,19 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile, UserRole, StoreSettings } from '../types';
+
+export const DEFAULT_STORE_SETTINGS: StoreSettings = {
+  storeName: 'COD Hub',
+  onlineReceivers: ['Shashank', 'Akshay'],
+  setupCompleted: true,
+};
 
 interface AuthContextType {
   user: any | null;
   profile: UserProfile | null;
   role: UserRole;
+  storeSettings: StoreSettings;
+  isSetupCompleted: boolean;
   loading: boolean;
   hasAdmin: boolean;
   isCloudConnected: boolean;
@@ -13,6 +21,7 @@ interface AuthContextType {
   signUp: (email: string, pass: string, fullName: string) => Promise<{ error: string | null; requireEmailVerification?: boolean }>;
   signUpFirstAdmin: (email: string, pass: string, fullName: string) => Promise<{ error: string | null; requireEmailVerification?: boolean }>;
   createStaffAccount: (email: string, pass: string, fullName: string, role: UserRole) => Promise<{ error: string | null }>;
+  updateStoreSettings: (newSettings: Partial<StoreSettings>) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: string | null; message?: string }>;
   getAllUsers: () => Promise<UserProfile[]>;
@@ -22,6 +31,8 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   profile: null,
   role: 'Staff',
+  storeSettings: DEFAULT_STORE_SETTINGS,
+  isSetupCompleted: true,
   loading: true,
   hasAdmin: true,
   isCloudConnected: false,
@@ -29,6 +40,7 @@ const AuthContext = createContext<AuthContextType>({
   signUp: async () => ({ error: 'Auth not initialized' }),
   signUpFirstAdmin: async () => ({ error: 'Auth not initialized' }),
   createStaffAccount: async () => ({ error: 'Auth not initialized' }),
+  updateStoreSettings: async () => ({ error: 'Auth not initialized' }),
   signOut: async () => {},
   resetPassword: async () => ({ error: 'Auth not initialized' }),
   getAllUsers: async () => [],
@@ -38,6 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<any | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [role, setRole] = useState<UserRole>('Admin');
+  const [storeSettings, setStoreSettings] = useState<StoreSettings>(DEFAULT_STORE_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
   const [hasAdmin, setHasAdmin] = useState<boolean>(true);
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
@@ -115,7 +128,128 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const loadStoreSettings = async (userId: string, isNewAccount = false) => {
+    const defaultReceivers = ['Shashank', 'Akshay'];
+    const localKey = `store_settings_${userId}`;
+    
+    let localSettings: StoreSettings | null = null;
+    try {
+      const raw = localStorage.getItem(localKey);
+      if (raw) localSettings = JSON.parse(raw);
+    } catch {}
+
+    if (localSettings && typeof localSettings.setupCompleted === 'boolean') {
+      setStoreSettings(localSettings);
+      return localSettings;
+    }
+
+    if (supabase) {
+      try {
+        const { data: storeData } = await supabase
+          .from('store_settings')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (storeData) {
+          const fetched: StoreSettings = {
+            storeName: storeData.store_name || 'COD Hub',
+            onlineReceivers: Array.isArray(storeData.online_receivers) && storeData.online_receivers.length > 0
+              ? storeData.online_receivers
+              : defaultReceivers,
+            setupCompleted: Boolean(storeData.setup_completed),
+          };
+          localStorage.setItem(localKey, JSON.stringify(fetched));
+          setStoreSettings(fetched);
+          return fetched;
+        }
+
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        if (currentUser?.user_metadata && currentUser.user_metadata.setup_completed !== undefined) {
+          const meta = currentUser.user_metadata;
+          const fetched: StoreSettings = {
+            storeName: meta.store_name || 'COD Hub',
+            onlineReceivers: Array.isArray(meta.online_receivers) && meta.online_receivers.length > 0
+              ? meta.online_receivers
+              : defaultReceivers,
+            setupCompleted: Boolean(meta.setup_completed),
+          };
+          localStorage.setItem(localKey, JSON.stringify(fetched));
+          setStoreSettings(fetched);
+          return fetched;
+        }
+      } catch (err) {
+        console.warn('Error loading store settings from Supabase:', err);
+      }
+    }
+
+    if (isNewAccount) {
+      const newSettings: StoreSettings = {
+        storeName: '',
+        onlineReceivers: ['', ''],
+        setupCompleted: false,
+      };
+      localStorage.setItem(localKey, JSON.stringify(newSettings));
+      setStoreSettings(newSettings);
+      return newSettings;
+    }
+
+    const fallback: StoreSettings = {
+      storeName: 'COD Hub',
+      onlineReceivers: defaultReceivers,
+      setupCompleted: true,
+    };
+    localStorage.setItem(localKey, JSON.stringify(fallback));
+    setStoreSettings(fallback);
+    return fallback;
+  };
+
+  const updateStoreSettings = async (newSettings: Partial<StoreSettings>): Promise<{ error: string | null }> => {
+    const userId = user?.id || profile?.id;
+    if (!userId) return { error: 'No user authenticated.' };
+
+    const currentName = storeSettings.storeName || 'COD Hub';
+    const currentReceivers = storeSettings.onlineReceivers || ['Shashank', 'Akshay'];
+
+    const updated: StoreSettings = {
+      storeName: (newSettings.storeName !== undefined ? newSettings.storeName : currentName).trim() || 'COD Hub',
+      onlineReceivers: newSettings.onlineReceivers 
+        ? newSettings.onlineReceivers.map(r => r.trim()).filter(Boolean)
+        : currentReceivers,
+      setupCompleted: newSettings.setupCompleted !== undefined ? newSettings.setupCompleted : true,
+    };
+
+    const localKey = `store_settings_${userId}`;
+    localStorage.setItem(localKey, JSON.stringify(updated));
+    setStoreSettings(updated);
+
+    if (supabase) {
+      try {
+        await supabase.auth.updateUser({
+          data: {
+            store_name: updated.storeName,
+            online_receivers: updated.onlineReceivers,
+            setup_completed: updated.setupCompleted,
+          },
+        });
+
+        await supabase.from('store_settings').upsert({
+          user_id: userId,
+          store_name: updated.storeName,
+          online_receivers: updated.onlineReceivers,
+          setup_completed: updated.setupCompleted,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn('Non-blocking error syncing store settings to Supabase:', err);
+      }
+    }
+
+    return { error: null };
+  };
+
   const fetchUserProfile = async (userId: string, email: string) => {
+    await loadStoreSettings(userId);
     if (!supabase) return;
     try {
       const { data, error } = await supabase
@@ -201,6 +335,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         options: {
           data: {
             full_name: fullName,
+            setup_completed: false,
           },
         },
       });
@@ -223,6 +358,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (data?.user) {
         console.log('[DEBUG SUPABASE SIGNUP USER CREATED] User ID:', data.user.id);
+        await loadStoreSettings(data.user.id, true);
         try {
           const { error: profileErr } = await supabase.from('profiles').upsert({
             id: data.user.id,
@@ -401,6 +537,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         profile,
         role,
+        storeSettings,
+        isSetupCompleted: Boolean(storeSettings?.setupCompleted),
         loading,
         hasAdmin,
         isCloudConnected,
@@ -408,6 +546,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signUp,
         signUpFirstAdmin,
         createStaffAccount,
+        updateStoreSettings,
         signOut,
         resetPassword,
         getAllUsers,

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Transaction, PaymentMode, OnlineReceiver } from '../types';
 import { getCurrentTimeFormatted, formatDisplayDate } from '../lib/utils';
+import { useAuth } from '../context/AuthContext';
 import {
   X,
   IndianRupee,
@@ -39,6 +40,11 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
   onClose,
   onSubmitPayment,
 }) => {
+  const { storeSettings } = useAuth();
+  const onlineReceivers = Array.isArray(storeSettings?.onlineReceivers) && storeSettings.onlineReceivers.length > 0
+    ? storeSettings.onlineReceivers
+    : ['Shashank', 'Akshay'];
+
   if (!isOpen || !transaction) return null;
 
   const currentPending = transaction.pendingAmount || 0;
@@ -50,7 +56,7 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
   const [cashAmount, setCashAmount] = useState<string>('');
   const [onlineAmount, setOnlineAmount] = useState<string>('');
   const [onlineReceivedBy, setOnlineReceivedBy] = useState<OnlineReceiver | ''>(
-    transaction.onlineReceivedBy || 'Shashank'
+    transaction.onlineReceivedBy || onlineReceivers[0] || 'Shashank'
   );
   const [date, setDate] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -386,8 +392,11 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
                     onChange={(e) => setOnlineReceivedBy(e.target.value as OnlineReceiver)}
                     className="w-full py-2 px-3 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
                   >
-                    <option value="Shashank">Shashank</option>
-                    <option value="Akshay">Akshay</option>
+                    {onlineReceivers.map((rec) => (
+                      <option key={rec} value={rec}>
+                        {rec}
+                      </option>
+                    ))}
                   </select>
                 </div>
               )}

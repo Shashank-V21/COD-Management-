@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Transaction, DashboardStats } from '../types';
 import { formatCurrency, formatDisplayDate, calculateStats } from '../lib/utils';
+import { useAuth } from '../context/AuthContext';
 import { ShieldCheck, X, Printer, CheckCircle2, AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -19,6 +20,7 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
   selectedDate,
   transactions,
 }) => {
+  const { storeSettings } = useAuth();
   if (!isOpen) return null;
 
   const stats: DashboardStats = calculateStats(transactions);
@@ -29,6 +31,10 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
   const numCashCounted = Number(cashCounted) || 0;
   const cashDiscrepancy = numCashCounted - stats.cashCollection;
 
+  const onlineReceivers = Array.isArray(storeSettings?.onlineReceivers) && storeSettings.onlineReceivers.length > 0
+    ? storeSettings.onlineReceivers
+    : Object.keys(stats.onlineByReceiver || {});
+
   const handleDownloadClosingPDF = () => {
     const doc = new jsPDF();
     doc.setFontSize(16);
@@ -36,6 +42,11 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
     doc.setFontSize(10);
     doc.text(`Date: ${formatDisplayDate(selectedDate)} | Closed At: ${new Date().toLocaleTimeString('en-IN')}`, 14, 22);
     doc.text(`Status: ${cashDiscrepancy === 0 ? 'BALANCED' : 'DISCREPANCY DETECTED'}`, 14, 27);
+
+    const receiverPdfRows = onlineReceivers.map((rec) => [
+      `Online - ${rec}`,
+      `Rs. ${(stats.onlineByReceiver?.[rec] || 0).toLocaleString('en-IN')}`,
+    ]);
 
     autoTable(doc, {
       head: [['Metric', 'Amount (INR)']],
@@ -46,8 +57,7 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
         ['Physical Cash Counted', `Rs. ${numCashCounted.toLocaleString('en-IN')}`],
         ['Cash Difference', `Rs. ${cashDiscrepancy.toLocaleString('en-IN')}`],
         ['Total Online Collected', `Rs. ${stats.onlineCollection.toLocaleString('en-IN')}`],
-        ['Online - Shashank', `Rs. ${stats.onlineByShashank.toLocaleString('en-IN')}`],
-        ['Online - Akshay', `Rs. ${stats.onlineByAkshay.toLocaleString('en-IN')}`],
+        ...receiverPdfRows,
         ['Unique Riders Paid', `${stats.totalRidersPaid}`],
       ],
       startY: 32,
@@ -102,14 +112,12 @@ export const DailyClosingModal: React.FC<DailyClosingModalProps> = ({
           {/* Online Breakdown */}
           <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-200 space-y-1">
             <p className="font-bold text-indigo-900">Online Collections Breakdown</p>
-            <div className="flex justify-between text-indigo-800">
-              <span>Shashank Account:</span>
-              <strong>{formatCurrency(stats.onlineByShashank)}</strong>
-            </div>
-            <div className="flex justify-between text-indigo-800">
-              <span>Akshay Account:</span>
-              <strong>{formatCurrency(stats.onlineByAkshay)}</strong>
-            </div>
+            {onlineReceivers.map((rec) => (
+              <div key={rec} className="flex justify-between text-indigo-800">
+                <span>{rec} Account:</span>
+                <strong>{formatCurrency(stats.onlineByReceiver?.[rec] || 0)}</strong>
+              </div>
+            ))}
           </div>
 
           {/* Physical Cash Vault Verification */}

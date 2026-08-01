@@ -1,6 +1,7 @@
 import React from 'react';
 import { DashboardStats } from '../types';
 import { formatCurrency } from '../lib/utils';
+import { useAuth } from '../context/AuthContext';
 import { Wallet, CreditCard, Banknote, Users, ArrowUpRight, UserCheck, Clock, IndianRupee } from 'lucide-react';
 
 interface StatsCardsProps {
@@ -9,6 +10,11 @@ interface StatsCardsProps {
 }
 
 export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
+  const { storeSettings } = useAuth();
+  const receiverLabel = Array.isArray(storeSettings?.onlineReceivers) && storeSettings.onlineReceivers.length > 0
+    ? storeSettings.onlineReceivers.join(' / ')
+    : 'Shashank / Akshay';
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
       {/* 1. Total COD Collected */}
@@ -50,7 +56,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
         <div className="flex items-baseline justify-between">
           <h3 className="text-xl font-extrabold text-slate-900">{formatCurrency(stats.onlineCollection)}</h3>
         </div>
-        <p className="text-xs text-slate-500 mt-1 font-medium">Shashank / Akshay</p>
+        <p className="text-xs text-slate-500 mt-1 font-medium truncate" title={receiverLabel}>{receiverLabel}</p>
       </div>
 
       {/* 4. Total Riders Paid */}

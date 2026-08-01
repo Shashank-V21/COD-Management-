@@ -8,6 +8,7 @@ import {
   calculateStats,
   exportToCSV,
 } from '../lib/utils';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import {
   FileSpreadsheet,
@@ -31,6 +32,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 export const ReportsView: React.FC = () => {
+  const { storeSettings } = useAuth();
   const [reportType, setReportType] = useState<'today' | 'yesterday' | 'custom'>('today');
   const [customStartDate, setCustomStartDate] = useState<string>(getTodayFormattedDate());
   const [customEndDate, setCustomEndDate] = useState<string>(getTodayFormattedDate());
@@ -93,6 +95,10 @@ export const ReportsView: React.FC = () => {
 
   const stats: DashboardStats = calculateStats(transactions);
 
+  const onlineReceivers = Array.isArray(storeSettings?.onlineReceivers) && storeSettings.onlineReceivers.length > 0
+    ? storeSettings.onlineReceivers
+    : Object.keys(stats.onlineByReceiver || {});
+
   const handleExportPDF = () => {
     const doc = new jsPDF();
     const titleDate =
@@ -101,6 +107,10 @@ export const ReportsView: React.FC = () => {
         : reportType === 'yesterday'
         ? `Yesterday (${formatDisplayDate(getYesterdayFormattedDate())})`
         : `${formatDisplayDate(customStartDate)} to ${formatDisplayDate(customEndDate)}`;
+
+    const receiverPdfText = onlineReceivers
+      .map((r) => `${r}: Rs. ${(stats.onlineByReceiver?.[r] || 0).toLocaleString('en-IN')}`)
+      .join(', ');
 
     doc.setFontSize(16);
     doc.text('COD Hub Operations - Reconciliation Report', 14, 15);
@@ -112,7 +122,7 @@ export const ReportsView: React.FC = () => {
       27
     );
     doc.text(
-      `Cash: Rs. ${stats.cashCollection.toLocaleString('en-IN')} | Online: Rs. ${stats.onlineCollection.toLocaleString('en-IN')} (Shashank: Rs. ${stats.onlineByShashank.toLocaleString('en-IN')}, Akshay: Rs. ${stats.onlineByAkshay.toLocaleString('en-IN')})`,
+      `Cash: Rs. ${stats.cashCollection.toLocaleString('en-IN')} | Online: Rs. ${stats.onlineCollection.toLocaleString('en-IN')} (${receiverPdfText})`,
       14,
       32
     );
@@ -228,14 +238,15 @@ export const ReportsView: React.FC = () => {
             <CreditCard className="w-4 h-4 text-indigo-600" />
           </div>
           <p className="text-2xl font-extrabold text-indigo-700">{formatCurrency(stats.onlineCollection)}</p>
-          <div className="flex items-center gap-2 text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100">
-            <span>
-              Shashank: <strong>{formatCurrency(stats.onlineByShashank)}</strong>
-            </span>
-            <span className="text-slate-300">•</span>
-            <span>
-              Akshay: <strong>{formatCurrency(stats.onlineByAkshay)}</strong>
-            </span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100">
+            {onlineReceivers.map((rec, i) => (
+              <React.Fragment key={rec}>
+                {i > 0 && <span className="text-slate-300">•</span>}
+                <span>
+                  {rec}: <strong>{formatCurrency(stats.onlineByReceiver?.[rec] || 0)}</strong>
+                </span>
+              </React.Fragment>
+            ))}
           </div>
         </div>
       </div>

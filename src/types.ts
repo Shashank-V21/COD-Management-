@@ -1,6 +1,12 @@
 export type PaymentMode = 'Cash' | 'Online' | 'Cash + Online';
 
-export type OnlineReceiver = 'Shashank' | 'Akshay';
+export type OnlineReceiver = string;
+
+export interface StoreSettings {
+  storeName: string;
+  onlineReceivers: string[];
+  setupCompleted: boolean;
+}
 
 export type PaymentStatus = 'Paid' | 'Pending';
 
@@ -50,6 +56,7 @@ export interface DashboardStats {
   onlineCollection: number;
   onlineByShashank: number;
   onlineByAkshay: number;
+  onlineByReceiver?: Record<string, number>;
   totalRidersPaid: number;
   pendingRidersCount?: number;
   totalPendingAmount?: number;
@@ -81,6 +88,7 @@ export interface DailyClosingReport {
   totalOnline: number;
   shashankOnline: number;
   akshayOnline: number;
+  receiverBreakdown?: Record<string, number>;
   totalRiders: number;
   status: 'Balanced' | 'Discrepancy';
   notes?: string;
