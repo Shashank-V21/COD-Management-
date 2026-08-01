@@ -65,6 +65,43 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
   const recvNow = Number(amountReceivedNow) || 0;
   const remainingAfterPayment = Math.max(0, currentPending - recvNow);
 
+  const numCash = Number(cashAmount) || 0;
+  const numOnline = Number(onlineAmount) || 0;
+  const splitSum = numCash + numOnline;
+  const isSplitValid =
+    paymentMode !== 'Cash + Online' ||
+    (numCash >= 0 && numOnline >= 0 && Math.abs(splitSum - recvNow) < 0.01);
+
+  const handlePaymentModeChange = (mode: PaymentMode) => {
+    setPaymentMode(mode);
+    if (mode === 'Cash + Online') {
+      if (recvNow > 0) {
+        if (Math.abs(numCash + numOnline - recvNow) > 0.01) {
+          const half = Math.round(recvNow / 2);
+          setCashAmount(half.toString());
+          setOnlineAmount((recvNow - half).toString());
+        }
+      } else {
+        setCashAmount('0');
+        setOnlineAmount('0');
+      }
+    }
+  };
+
+  const handleAmountReceivedChange = (val: string) => {
+    setAmountReceivedNow(val);
+    const newRecv = Number(val) || 0;
+    if (paymentMode === 'Cash + Online') {
+      const currentCash = Number(cashAmount) || 0;
+      if (currentCash <= newRecv) {
+        setOnlineAmount(Math.max(0, newRecv - currentCash).toString());
+      } else {
+        setCashAmount(newRecv.toString());
+        setOnlineAmount('0');
+      }
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -83,6 +120,13 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
       return;
     }
 
+    if (paymentMode === 'Cash + Online') {
+      if (!isSplitValid) {
+        setErrorMsg('Cash + Online total must equal Amount Received.');
+        return;
+      }
+    }
+
     if ((paymentMode === 'Online' || paymentMode === 'Cash + Online') && !onlineReceivedBy) {
       setErrorMsg('Please select who received the online payment.');
       return;
@@ -91,11 +135,24 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
     setIsSubmitting(true);
 
     try {
+      const finalCash =
+        paymentMode === 'Cash'
+          ? recvNow
+          : paymentMode === 'Cash + Online'
+          ? numCash
+          : 0;
+      const finalOnline =
+        paymentMode === 'Online'
+          ? recvNow
+          : paymentMode === 'Cash + Online'
+          ? numOnline
+          : 0;
+
       await onSubmitPayment(transaction.id, {
         amountReceivedNow: recvNow,
         paymentMode,
-        cashAmount: paymentMode === 'Cash' ? recvNow : Number(cashAmount) || 0,
-        onlineAmount: paymentMode === 'Online' ? recvNow : Number(onlineAmount) || 0,
+        cashAmount: finalCash,
+        onlineAmount: finalOnline,
         onlineReceivedBy: paymentMode === 'Cash' ? '' : onlineReceivedBy,
         remarks: remarks.trim(),
         date,
@@ -206,13 +263,13 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
                     step="any"
                     required
                     value={amountReceivedNow}
-                    onChange={(e) => setAmountReceivedNow(e.target.value)}
+                    onChange={(e) => handleAmountReceivedChange(e.target.value)}
                     className="w-full pl-9 pr-24 py-2.5 bg-white border border-slate-300 rounded-xl text-base font-extrabold text-slate-900 focus:ring-2 focus:ring-amber-500"
                   />
                   <IndianRupee className="w-5 h-5 text-slate-400 absolute left-3 top-3" />
                   <button
                     type="button"
-                    onClick={() => setAmountReceivedNow(currentPending.toString())}
+                    onClick={() => handleAmountReceivedChange(currentPending.toString())}
                     className="absolute right-2 top-2 px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md text-[11px] font-bold"
                   >
                     Full ₹{currentPending}
@@ -230,7 +287,7 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
                     <button
                       key={mode}
                       type="button"
-                      onClick={() => setPaymentMode(mode)}
+                      onClick={() => handlePaymentModeChange(mode)}
                       className={`py-1.5 px-2 rounded-md text-xs font-bold transition-all text-center ${
                         paymentMode === mode
                           ? 'bg-amber-600 text-white shadow-2xs'
@@ -242,6 +299,81 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
                   ))}
                 </div>
               </div>
+
+              {/* Cash + Online Split Breakdown Fields */}
+              {paymentMode === 'Cash + Online' && (
+                <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between border-b border-amber-200/80 pb-2">
+                    <span className="text-xs font-bold text-amber-900">
+                      Split Payment Breakdown
+                    </span>
+                    {isSplitValid ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Sum Matches!
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-700 bg-red-100 px-2.5 py-0.5 rounded-full">
+                        <AlertCircle className="w-3.5 h-3.5" /> Sum: ₹{splitSum} (Required: ₹{recvNow})
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Cash Amount Input */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Cash Amount (₹) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        placeholder="0"
+                        value={cashAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setCashAmount(val);
+                          if (recvNow > 0 && val !== '') {
+                            const remain = Math.max(0, recvNow - Number(val));
+                            setOnlineAmount(remain.toString());
+                          }
+                        }}
+                        className="w-full py-2 px-3 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+
+                    {/* Online Amount Input */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Online Amount (₹) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        placeholder="0"
+                        value={onlineAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setOnlineAmount(val);
+                          if (recvNow > 0 && val !== '') {
+                            const remain = Math.max(0, recvNow - Number(val));
+                            setCashAmount(remain.toString());
+                          }
+                        }}
+                        className="w-full py-2 px-3 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  {!isSplitValid && (
+                    <p className="text-xs font-semibold text-red-600 flex items-center gap-1 mt-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      Cash + Online total must equal Amount Received.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Online Received By if Online/Split */}
               {(paymentMode === 'Online' || paymentMode === 'Cash + Online') && (
@@ -311,7 +443,7 @@ export const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || (paymentMode === 'Cash + Online' && !isSplitValid)}
                   className="flex-1 py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-600/20 disabled:opacity-50 flex items-center justify-center gap-1.5"
                 >
                   {isSubmitting ? (

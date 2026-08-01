@@ -560,8 +560,18 @@ export const api = {
       // Set payment_status = 'Paid' when pending_amount is 0 or when marked as paid
       const newStatus = newPending <= 0 ? 'Paid' : 'Pending';
 
-      const addCash = payload.cashAmount || (payload.paymentMode === 'Cash' ? recvNow : 0);
-      const addOnline = payload.onlineAmount || (payload.paymentMode === 'Online' ? recvNow : 0);
+      const addCash =
+        typeof payload.cashAmount === 'number'
+          ? payload.cashAmount
+          : payload.paymentMode === 'Cash'
+          ? recvNow
+          : 0;
+      const addOnline =
+        typeof payload.onlineAmount === 'number'
+          ? payload.onlineAmount
+          : payload.paymentMode === 'Online'
+          ? recvNow
+          : 0;
 
       const newCashTotal = (Number(existingTx.cash_amount) || 0) + addCash;
       const newOnlineTotal = (Number(existingTx.online_amount) || 0) + addOnline;

@@ -530,8 +530,18 @@ app.post('/api/transactions/:id/receive-payment', async (req, res) => {
 
         const prevCash = Number(row.getCell(5).value) || 0;
         const prevOnline = Number(row.getCell(6).value) || 0;
-        const addCash = Number(cashAmount) || (paymentMode === 'Cash' ? recvNow : 0);
-        const addOnline = Number(onlineAmount) || (paymentMode === 'Online' ? recvNow : 0);
+        const addCash =
+          typeof cashAmount === 'number'
+            ? cashAmount
+            : paymentMode === 'Cash'
+            ? recvNow
+            : 0;
+        const addOnline =
+          typeof onlineAmount === 'number'
+            ? onlineAmount
+            : paymentMode === 'Online'
+            ? recvNow
+            : 0;
 
         const newCashTotal = prevCash + addCash;
         const newOnlineTotal = prevOnline + addOnline;
